@@ -1,0 +1,160 @@
+[rkreader] log=/var/mobile/Containers/Data/Application/6479E222-EE77-444A-814D-61F7578598FD/Documents/rk_recon.log
+[rkreader] loaded, waiting for il2cpp…
+[rkreader] capture thread: waiting for il2cpp…
+[ads] AppLovin hooks installed
+[overlay] scenes=0 picked=NO state=-1
+[rkreader] resolved=1 unity=0x37d5b0 missing=
+[overlay] scenes=1 picked=yes state=1
+[overlay] attached to host window bounds={{0, 0}, {896, 414}}
+[recon] ==== auto-place recon (main thread) ====
+DEEP CLASS RmkbMovesData
+  field 0x18 MoveDetails : RmkbMovesData.RmkbMoveDetails
+  field 0x1c TargetLocation : Card.CardLocation
+  field 0x20 TargetPositionX : System.Int32
+  field 0x24 TargetPositionY : System.Int32
+  field 0x28 PreferredCardToAttatchTo : System.Int32
+  field 0x2c isAIMove : System.Boolean
+  field 0x30 MovedCards : System.Collections.Generic.List<System.Int32>
+  method .ctor() -> System.Void
+  method Clone() -> BaseMovesData
+  method ToString() -> System.String
+DEEP CLASS BaseMovesData
+  field 0x10 TypeOfMove : BaseMovesData.MoveType
+  field 0x14 MoveMakingSeat : System.Int32
+  method Clone() -> BaseMovesData
+  method .ctor() -> System.Void
+DEEP CLASS RmkbGameClient
+  field 0x6c FirstMeldPlaced : System.Boolean
+  field 0x6d IsFinalRound : System.Boolean
+  field 0x70 RackWidth : System.Int32
+  field 0x74 RackHeight : System.Int32
+  field 0x78 BoardSizeRatio : System.Single
+  method SerializeLocal(System.Collections.Generic.Dictionary<System.String,System.String>) -> System.Void
+  method DeserializeLocal(System.Collections.Generic.Dictionary<System.String,System.String>) -> System.Boolean
+  method ToString() -> System.String
+  method SerializeToStr() -> System.Collections.Generic.List<System.String>
+  method DeserializeFromStr(System.Collections.Generic.List<System.String>) -> System.Void
+  method Clone() -> BaseGameClient
+  method .ctor() -> System.Void
+[recon] scanning 923 classes for move/turn owners
+[recon] class: BaseFlowMaster
+[recon] class: BaseMasterClient
+[recon] class: BaseTutorialMaster
+[recon] class: BaseCompetitionMaster
+[recon] class: EmergencyMessageMaster
+[recon] class: ShopMaster
+[recon] class: SocialMaster
+[recon] class: AppleAuthMaster
+[recon] class: BaseAdsMaster
+[recon] class: BaseAnalyticsMaster
+[recon] class: BaseChatMaster
+[recon] class: DatabaseMaster
+[recon] class: FirebaseNetworkMessageMaster
+[recon] class: FacebookMaster
+[recon] class: BaseMovesData
+[recon] class: LoginMaster
+[recon] class: PlatformConnectivityMaster
+[recon] class: ScreenSizeMaster
+[recon] class: SoundMaster
+[recon] class: RmkbBestOf5CompetitionController
+[recon] class: RmkbCompetitionMaster
+[recon] class: RmkbFinal4CompetitionController
+[recon] class: RmkbIRCCompetitionController
+[recon] class: RmkbPhasedCompetitionController
+[recon] class: RmkbScoreRushCompetitionController
+[recon] class: RmkbWRC2024CompetitionController
+[recon] class: RmkbAIMove
+[recon] class: RmkbAIWrapper
+[recon] class: RmkbFlowMaster
+[recon] class: RmkbMoveValidationState
+[recon] class: RmkbGameDataManipulator
+[recon] class: RmkbMasterClient
+[recon] class: RmkbSlaveClient
+[recon] class: RmkbTutorialMaster
+[recon] class: RmkbDebugCardPopupView
+[recon] class: RmkbBestOf5CompetitionFirebaseManager
+[recon] class: RmkbFinal4TournamentData
+[recon] class: RmkbFinal4CompetitionsArrayDBEntryWrapper
+[recon] class: RmkbFinal4CompetitionDBEntryWrapper
+[recon] class: RmkbFinal4TournamentDBEntry
+[recon] class: RmkbFinal4CompetitionFirebaseManager
+[recon] class: RmkbIRC2024CompetitionFirebaseManager
+[recon] class: RmkbPhasedCompetitionFirebaseManager
+[recon] class: RmkbScoreRushCompetitionFirebaseManager
+[recon] class: RmkbWRC2024CompetitionFirebaseManager
+[recon] class: RmkbGameClient
+[recon] class: RmkbGameData
+[recon] class: RmkbMoveDetails
+[recon] class: RmkbMovesData
+[recon] class: RmkbPreGameData
+[recon] class: RmkbFirebaseManager
+[recon] class: RmkbGameRulesProxy
+[recon] class: RmkbAnalyticsMaster
+[recon] class: RmkbChatMaster
+[recon] class: RmkbGlobalClassFactory
+[recon] class: RmkbRulesSet
+[recon] class: RmkbGameSettings
+[recon] class: RmkbTutorialGameStats
+[recon] class: RmkbTutorialMain
+[recon] class: RmkbTutorialNewProfilePhotos
+[recon] class: RmkbBestOf5CompetitionHighScoreEntryView
+[recon] class: RmkbBestOf5CompetitionView
+[recon] class: RmkbCompetitionView
+[recon] class: RmkbFinal4CompetitionView
+[recon] class: RmkbFinal4SingleGameView
+[recon] class: RmkbFinal4TournamentDataView
+[recon] class: RmkbIRC2024CompetitionView
+[recon] class: RmkbPhasedCompetitionView
+[recon] class: RmkbScoreRushCompetitionView
+[recon] class: RmkbScoreRushTimerView
+[recon] class: RmkbTournamentSelectionView
+[recon] class: RmkbWRC2024CompetitionView
+[recon] class: RmkbFriendsEntryView
+[recon] class: RmkbCopyRightTextView
+[recon] class: RmkbScoreRushTimerViewWithDays
+[recon] class: RmkbFinal4TournamentPopupScreen
+[recon] class: RmkbFinal4TournamentPopup
+[recon] class: RmkbLevelUpPopup
+[recon] class: RmkbSignUpPopup
+[recon] class: RmkbSimplePopup
+[recon] class: RmkbAvatarImageContainer
+[recon] class: RmkbAvatarView
+[recon] class: RmkbChatView
+[recon] class: RmkbCustomGameViewInvitational
+[recon] class: RmkbCustomGameViewMultiplayer
+[recon] class: RmkbCustomGameViewPrivate
+[recon] class: RmkbDailyBonusTimerView
+[recon] class: RmkbDailyBonusView
+[recon] class: RmkbEndGameEntryView
+[recon] class: RmkbGameHistoryEntryView
+[recon] class: RmkbGameRulesView
+[recon] class: RmkbGameSeatView
+[recon] class: RmkbGameStatsView
+[recon] class: RmkbGameView2D
+[recon] class: RmkbGameView3D
+[recon] class: RmkbGridElementView
+[recon] class: RmkbGridView
+[recon] class: RmkbInvitationalGameCodeInputPopupView
+[recon] class: RmkbMenuView
+[recon] class: RmkbPendingPrivateGamesPopupView
+[recon] class: RmkbPlayerDataView
+[recon] class: RmkbPracticeGameSetupView
+[recon] class: RmkbPrivateGameInviteFriendsView
+[recon] class: RmkbProductView
+[recon] class: RmkbProfileStripView
+[recon] class: RmkbSettingsView
+[recon] class: RmkbShopView
+[recon] class: RmkbSoundName
+[recon] class: RmkbSoundByEnum
+[recon] class: RmkbCreateDelaySound
+[recon] class: RmkbSoundMaster
+[recon] class: RmkbStatEntryView
+[recon] class: RmkbStatisticsSelectionButtonView
+[recon] class: RmkbTieBreakerPopupView
+[recon] class: RmkbTutorialGameStatsView
+[recon] class: RmkbTutorialMainView
+[recon] class: RmkbTutorialNewProfilePhotosView
+[recon] class: BaseMultiplayerMaster
+[recon] class: ConnectivityMaster
+[recon] class: RmkbMultiplayerMaster
+[recon] ==== auto-place recon done ====

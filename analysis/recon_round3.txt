@@ -1,0 +1,105 @@
+[rkreader] log=/var/mobile/Containers/Data/Application/6479E222-EE77-444A-814D-61F7578598FD/Documents/rk_recon.log
+[rkreader] loaded, waiting for il2cpp…
+[rkreader] capture thread: waiting for il2cpp…
+[ads] AppLovin hooks installed
+[overlay] scenes=0 picked=NO state=-1
+[rkreader] resolved=1 unity=0x3cd5b0 missing=
+[rkreader] domain=0x10b0fefc0
+[overlay] scenes=1 picked=yes state=0
+[overlay] attached to host window bounds={{0, 0}, {896, 414}}
+[recon] ==== auto-place recon (main thread) ====
+DEEP CLASS RmkbFlowMaster
+  field 0x228 RewardParticlesViewRef : RewardParticlesView
+  field 0x230 CameraRef : UnityEngine.Camera
+  field 0x238 PopupTemplateMiddleButton : UnityEngine.RectTransform
+  field 0x240 RmkbFinal4CompetitionControllerRef : RmkbFinal4CompetitionController
+  method InitAll() -> System.Collections.IEnumerator
+  method ShouldSkipMenuOnAppReopen() -> System.Boolean
+  method FirstTimeInMenu() -> System.Void
+  method InitViewsLocal() -> System.Void
+  method GetInvitationalGameInviteText(System.String) -> System.String
+  method LocalSetAndroidAndIosBundleIDs(System.String&,System.String&) -> System.Void
+  method ShowCompetitionEndedNotification(System.String) -> System.Void
+  method ShouldShowAdAtStartOfGame(BasePreGameData) -> System.Boolean
+  method ResetMainTutirial() -> System.Void
+  method CoinsEarned(System.Int32,BaseAnalyticsMaster.CurrencySourceType) -> System.Void
+  method .ctor() -> System.Void
+  method <>n__0() -> System.Collections.IEnumerator
+DEEP CLASS RmkbAIWrapper
+  field 0x38 TutorialMasterRef : RmkbTutorialMaster
+  field 0x40 _rGameDataManipulator : RmkbGameDataManipulator
+  field 0x48 _rGameRulesProxy : RmkbGameRulesProxy
+  field 0x50 _aiMoves : System.Collections.Generic.List<RmkbAIWrapper.RmkbAIMove>
+  method Init() -> System.Void
+  method GetAIMoves() -> System.Collections.Generic.List<BaseAIMove>
+  method SetAIParams(RmkbGameData.GameRulesPresetTypes,System.Int32) -> System.Void
+  method CalculateAIMoves(BaseGameData,System.Int32,System.Boolean) -> System.Collections.IEnumerator
+  method CalculateFirstMeldAIMove(RmkbGameData,System.Collections.Generic.List<System.Collections.Generic.List<Card>>,System.Collections.Generic.List<Card>) -> System.Collections.Generic.List<System.Collections.Generic.List<Card>>
+  method BreakdownAIMoves(RmkbGameData&,System.Collections.Generic.List<RmkbGameDataManipulator.Sequence>,System.Collections.Generic.List<Card>,System.Collections.Generic.List<RmkbGameDataManipulator.Sequence>) -> System.Collections.Generic.List<RmkbAIWrapper.RmkbAIMove>
+  method AIMoveToClientMove(BaseGameData&,BaseAIMove) -> BaseMovesData
+  method printCardList(System.Collections.Generic.List<Card>) -> System.String
+  method FindCardToFillSeq(Card,System.Collections.Generic.List<RmkbAIWrapper.AIResultParent>,System.Collections.Generic.List<Card>) -> RmkbAIWrapper.AIMoveCard
+  method CompareSeq(RmkbAIWrapper.AIResultChild,RmkbAIWrapper.AIResultParent,System.Single&,System.Collections.Generic.List<Card>&,System.Collections.Generic.List<Card>&) -> RmkbAIWrapper.AIResultChild.SeqMatchType
+  method .ctor() -> System.Void
+DEEP RmkbAIMove: NOT FOUND
+NESTED BaseMovesData.MoveType
+    value__
+    [static] PlayerAction
+    [static] ConfirmMove
+    [static] UndoMove
+    [static] PassMove
+    [static] AI
+NESTED RmkbMovesData.RmkbMoveDetails
+    value__
+    [static] MoveTiles
+    [static] ArrangeByColor
+    [static] ArrangeByValue
+NESTED Card.CardLocation
+    value__
+    [static] Stack
+    [static] Player
+    [static] Board
+NESTED Card.MovmentType
+    value__
+    [static] Hardset
+    [static] Deal
+    [static] Auto
+    [static] Player
+    [static] Drag
+NESTED Card.CardValue
+    Color
+    NumericValue
+    IsJoker
+NESTED RmkbGameView3D.DTileSelectionDel
+NESTED RmkbGameView3D.PositionLocation
+    PosX
+    PosY
+    location
+    WorldPosition
+NESTED RmkbGameView3D.<>c__DisplayClass89_0
+    <>4__this
+    i
+    <>9__0
+NESTED RmkbGameView3D.<ArrangeFromGameData>d__89
+    <>1__state
+    <>2__current
+    <>4__this
+    gameDataComparer
+    currentGameData
+    previousGameData
+    playerID
+NESTED RmkbGameView3D.<DelayedUpdateRackAndBoardSize>d__79
+    <>1__state
+    <>2__current
+    <>4__this
+NESTED RmkbGameView3D.<SetEnemyTilePositions>d__76
+    <>1__state
+    <>2__current
+    <>4__this
+[recon] ==== auto-place recon done ====
+[rkreader] assemblies stable ~120
+[rkreader] img=0x104ead0f8
+[rkreader] coreImg=0x104ead1d0
+[rkreader] hook setrack @ 0x10f50fd0c
+[rkreader] hook CreateGrid @ 0x10f6271b0
+[rkreader] capture hooks armed; SOLVE ready

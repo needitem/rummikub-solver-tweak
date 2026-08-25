@@ -1,0 +1,262 @@
+[rkreader] log=/var/mobile/Containers/Data/Application/6479E222-EE77-444A-814D-61F7578598FD/Documents/rk_recon.log
+[rkreader] loaded, waiting for il2cpp…
+[rkreader] capture thread: waiting for il2cpp…
+[ads] AppLovin hooks installed
+[overlay] scenes=0 picked=NO state=-1
+[rkreader] resolved=1 unity=0x3d55b0 missing=
+[overlay] scenes=1 picked=yes state=1
+[overlay] attached to host window bounds={{0, 0}, {896, 414}}
+[recon] ==== auto-place recon (main thread) ====
+DEEP CLASS RmkbGameDataManipulator
+  field 0x38 TutorialMasterRef : RmkbTutorialMaster
+  field 0x40 CompetitionMasterRef : BaseCompetitionMaster
+  field [static] 0x0 JOKER_VALUE : System.Int32
+  field 0x48 MIN_SUM_ON_FIRST_MELD : System.Int32
+  field 0x4c SCORE_FOR_NO_MELDS_WITHOUT_OPTION : System.Int32
+  field 0x50 SCORE_FOR_NO_MELDS_WITH_OPTION : System.Int32
+  field 0x58 _grid : Card[][]
+  field 0x60 _gridWidth : System.Int32
+  field 0x64 _gridHeight : System.Int32
+  field 0x68 _boardStartX : System.Int32
+  field 0x6c _boardStartY : System.Int32
+  field 0x70 RmkbGameRulesProxyRef : RmkbGameRulesProxy
+  method Init() -> System.Void
+  method CheckGameOverAndFinalizeGameData(BaseGameData) -> System.Void
+  method ValidateAndApplyMove(BaseGameData,BaseMovesData,System.Boolean) -> BaseMoveValidationState
+  method CheckGameOver(RmkbGameData&,RmkbGameDataManipulator.RmkbMoveValidationState) -> System.Void
+  method IsGameOverForCurrentPlayer(BaseGameData) -> System.Boolean
+  method CheckMoveWithinBoardRange(RmkbGameData&,RmkbMovesData,RmkbGameDataManipulator.RmkbMoveValidationState&) -> System.Boolean
+  method CheckTileOriginalPosForValueSeq(RmkbGameData&,RmkbMovesData) -> System.Collections.Generic.List<Card>
+  method UndoMove(RmkbGameData&) -> System.Void
+  method CreateGrid(RmkbGameData) -> System.Boolean
+  method RelocateCardsOnBoard(RmkbGameData&,System.Collections.Generic.List<Card>,System.Int32,System.Int32,System.Boolean) -> System.Void
+  method MakeSureClientBoardSizeFitsCards(RmkbGameData&) -> System.Boolean
+  method GetBoardWidthFromHeightAndClients(RmkbGameData,System.Int32) -> System.Int32
+  method FindFullSequenceAfterMove(RmkbGameData&,RmkbMovesData) -> RmkbGameDataManipulator.Sequence
+  method ClearSpaceForTilesOnBoard(RmkbGameData&,RmkbGameDataManipulator.Sequence) -> System.Void
+  method EnlargeBoardByOneRow(RmkbGameData&,System.Boolean,System.Boolean) -> System.Void
+  method ClearSpaceForTilesOnRow(RmkbGameData&,RmkbGameDataManipulator.Sequence) -> System.Void
+  method SumSequncesTotalLength(System.Collections.Generic.List<RmkbGameDataManipulator.Sequence>,System.Int32) -> System.Int32
+  method AnalyzeSequence(RmkbRulesSet,RmkbGameDataManipulator.Sequence,System.Boolean,System.Boolean) -> System.Void
+  method FindFirstValidSeqFromCardList(RmkbRulesSet,System.Collections.Generic.List<Card>,System.Int32,System.Boolean,System.Int32&) -> RmkbGameDataManipulator.Sequence
+  method CalculatePossibleFirstMeld(RmkbRulesSet,System.Collections.Generic.List<Card>) -> System.Collections.Generic.List<System.Collections.Generic.List<Card>>
+  method CardSort(System.Collections.Generic.List<Card>&,RmkbGameDataManipulator.CardSortType) -> System.Void
+  method CompareCardsValue(Card,Card) -> System.Boolean
+  method CopyCardList(System.Collections.Generic.List<Card>) -> System.Collections.Generic.List<Card>
+  method GetCardListString(System.Collections.Generic.List<Card>) -> System.String
+  method PrintCardList(System.String,System.Collections.Generic.List<Card>) -> System.Void
+  method PrintCardList(System.String,System.Collections.Generic.List<RmkbGameDataManipulator.Sequence>) -> System.Void
+  method ValidateBoard(RmkbGameData&,System.Boolean,RmkbGameDataManipulator.RmkbMoveValidationState&) -> System.Void
+  method GetAllSequencesFromRow(System.Int32) -> System.Collections.Generic.List<RmkbGameDataManipulator.Sequence>
+  method GetIsRowEmpty(RmkbGameData&,System.Int32,System.Collections.Generic.List<Card>) -> System.Boolean
+  method DealCardToCurrentPlayer(RmkbGameData&) -> System.Boolean
+  method CalculateGameEndingScoring(BaseGameData) -> System.Void
+  method PlayerHandScore(RmkbGameData,RmkbGameClient) -> System.Int32
+  method RemoveClientFromGameLocal(BaseGameData&,System.String) -> System.Void
+  method LocalEndTurn(BaseGameData) -> System.Boolean
+  method LocalEndRound(BaseGameData) -> System.Boolean
+  method FindFirstFreeLocationOnRack(RmkbGameData&,System.String,System.Int32) -> System.Int32
+  method RearrangePlayerTiles(RmkbGameData&,RmkbMovesData) -> System.Void
+  method CardSortWithSpacesAfterSequences(RmkbGameData&,RmkbGameClient,System.Collections.Generic.List<Card>&,RmkbGameDataManipulator.CardSortType) -> System.Void
+  method [static] findMaxXPositionInCardList(System.Collections.Generic.List<Card>) -> System.Int32
+  method MinimizeRackSize(RmkbGameData&,RmkbGameClient,System.Int32) -> System.Void
+  method ModifyRackWidth(RmkbGameData&,RmkbGameClient,System.Int32,System.Boolean) -> System.Void
+  method addSpaceAfterSequences(System.Collections.Generic.List<Card>,RmkbGameDataManipulator.CardSortType,RmkbGameData) -> System.Void
+  method addSpaceAfterSequencesByValue(System.Collections.Generic.List<Card>,RmkbGameData,System.Boolean) -> System.Void
+  method [static] addSpaceAfterSequencesByColor(System.Collections.Generic.List<Card>,RmkbGameData,System.Boolean) -> System.Void
+  method ShuffleList(System.Collections.Generic.List<T>) -> System.Void
+  method ShuffleByOrder(System.Collections.Generic.List<T>,System.Collections.Generic.List<T>) -> System.Void
+  method .ctor() -> System.Void
+  method [static] .cctor() -> System.Void
+DEEP CLASS RmkbGameView3D
+  field 0x38 TEXTURES_NUM_PER_COLOR : System.Int32
+  field 0x3c TEXTURES_COLORS_NUM : System.Int32
+  field 0x40 GameCamera : UnityEngine.Camera
+  field 0x48 TutorialMasterRef : RmkbTutorialMaster
+  field 0x50 ScreenContentContainer : UnityEngine.GameObject
+  field 0x58 WideScreenContainer : UnityEngine.GameObject
+  field 0x60 NarrowScreenContainer : UnityEngine.GameObject
+  field 0x68 StackLocation : UnityEngine.RectTransform
+  field 0x70 StackWorldLocation : UnityEngine.Vector3
+  field 0x80 _enemiesTilesLocation : UnityEngine.RectTransform[]
+  field 0x88 WideScreenEnemiesTilesLocation : UnityEngine.RectTransform[]
+  field 0x90 NarrowScreenEnemiesTilesLocation : UnityEngine.RectTransform[]
+  field 0x98 EnemiesWorldLocation : UnityEngine.Vector3[]
+  field 0xa0 PlayerTileMarkerCanvasScale : UnityEngine.Vector3
+  field 0xb0 TilePrefab : UnityEngine.GameObject
+  field 0xb8 PlayerTileMarkerPrefab : UnityEngine.GameObject
+  field 0xc0 BoardTileMarkerPrefab : UnityEngine.GameObject
+  field 0xc8 PlayerTileMarkers : System.Collections.Generic.List<UnityEngine.GameObject>
+  field 0xd0 BoardTileMarkers : System.Collections.Generic.List<UnityEngine.GameObject>
+  field 0xd8 _tilesTexture : UnityEngine.Texture[]
+  field 0xe0 TileSize : UnityEngine.Vector2
+  field 0xe8 _TileSizeXAsVec : UnityEngine.Vector3
+  field 0xf4 _TileSizeYAsVec : UnityEngine.Vector3
+  field 0x100 BoardScanPadding : System.Int32
+  field 0x104 DealPathPosition : UnityEngine.Vector3
+  field 0x110 _tempVector3 : UnityEngine.Vector3
+  field 0x11c _tempVector2 : UnityEngine.Vector2
+  field 0x128 EPlayerClickedATile : RmkbGameView3D.DTileSelectionDel
+  field 0x130 ETilesHoverBoard : System.Action<System.Int32,System.Int32,System.Collections.Generic.List<Card>>
+  field 0x138 _tileObjects : UnityEngine.GameObject[]
+  field 0x140 Tiles : TileContainer[]
+  field 0x148 TilesUseTextures : System.Boolean
+  field 0x150 _selectedTiles : System.Collections.Generic.List<TileContainer>
+  field 0x158 _startOfSelectionPositionOffset : UnityEngine.Vector3
+  field 0x164 _startOfSelectionPositionFixed : UnityEngine.Vector3
+  field 0x170 _cardsToBeSelected : System.Collections.Generic.List<Card>
+  field 0x178 _rackEnabled : System.Boolean
+  field 0x17c _rackWidth : System.Int32
+  field 0x180 _rackHeight : System.Int32
+  field 0x184 _boardGridWidth : System.Int32
+  field 0x188 _boardGridHeight : System.Int32
+  field 0x18c _boardGridXOffset : System.Int32
+  field 0x190 _boardGridYOffset : System.Int32
+  field 0x194 _depthIterationstep : System.Single
+  field 0x198 _rackPlayArea : UnityEngine.RectTransform[]
+  field 0x1a0 WideScreenRackPlayArea : UnityEngine.RectTransform[]
+  field 0x1a8 NarrowScreenRackPlayArea : UnityEngine.RectTransform[]
+  field 0x1b0 _rackLeft : UnityEngine.Vector3[]
+  field 0x1b8 BackgroundImage : UnityEngine.UI.Image
+  field 0x1c0 NonCompetitionBackgroundSprite : UnityEngine.Sprite
+  field 0x1c8 CompetitionBackgroundSprite : UnityEngine.Sprite
+  field 0x1d0 _rackMiddleWorld : System.Single
+  field 0x1d8 _rackImage : UnityEngine.UI.Image
+  field 0x1e0 CompetitionRackSprite : UnityEngine.Sprite
+  field 0x1e8 NonCompetitionRackSprite : UnityEngine.Sprite
+  field 0x1f0 WideScreenRackImage : UnityEngine.UI.Image
+  field 0x1f8 NarrowScreenRackImage : UnityEngine.UI.Image
+  field 0x200 _rackBaseUIWorldPositions : UIToWorldConverter.WorldUIPosition[]
+  field 0x208 _boardPlayArea : UnityEngine.RectTransform
+  field 0x210 WideScreenBoardPlayArea : UnityEngine.RectTransform
+  field 0x218 NarrowScreenBoardPlayArea : UnityEngine.RectTransform
+  field 0x220 _boardTopLeft : UnityEngine.Vector3
+  field 0x230 _boardCornersUIWorldPosition : UIToWorldConverter.WorldUIPosition
+  field 0x238 BoardParentCanvas : UnityEngine.Canvas
+  field 0x240 GridViewRef : RmkbGridView
+  field 0x248 _showPlayerTiles : System.Collections.Generic.List<System.String>
+  method add_EPlayerClickedATile(RmkbGameView3D.DTileSelectionDel) -> System.Void
+  method remove_EPlayerClickedATile(RmkbGameView3D.DTileSelectionDel) -> System.Void
+  method add_ETilesHoverBoard(System.Action<System.Int32,System.Int32,System.Collections.Generic.List<Card>>) -> System.Void
+  method remove_ETilesHoverBoard(System.Action<System.Int32,System.Int32,System.Collections.Generic.List<Card>>) -> System.Void
+  method get_rackEnabled() -> System.Boolean
+  method set_rackEnabled(System.Boolean) -> System.Void
+  method Init() -> System.Void
+  method FillTileObjectPool(System.Int32) -> System.Void
+  method SetEnemyTilePositions() -> System.Collections.IEnumerator
+  method ToggleContentContainer() -> System.Void
+  method SetNarrowOrWideScreen(System.Boolean,System.Single) -> System.Void
+  method DelayedUpdateRackAndBoardSize() -> System.Collections.IEnumerator
+  method GetBoardRatio() -> System.Single
+  method Reset() -> System.Void
+  method SetGameScreen(BaseGameData,BaseGameDataComparer,System.String) -> System.Void
+  method SetTableColorAndImage(System.Int32,BaseGameData.GamePlayersType,System.Boolean) -> System.Void
+  method ClearTileObjects() -> System.Void
+  method PrepareTileObjects(RmkbGameData) -> System.Void
+  method PrepareTileObjects(System.Collections.Generic.List<Card>,RmkbGameData.GameRulesPresetTypes,System.Collections.Generic.List<UnityEngine.RectTransform>,System.Single) -> System.Void
+  method PrepareTileObject(Card,System.Int32,System.Boolean,RmkbGameData.GameRulesPresetTypes) -> System.Void
+  method [static] ColorByNum(System.Int32) -> UnityEngine.Color
+  method ArrangeFromGameData(BaseGameData,BaseGameData,BaseGameDataComparer,System.String) -> System.Collections.IEnumerator
+  method ApplyMarkers() -> System.Void
+  method SetHover(System.Collections.Generic.List<System.Int32>,System.Collections.Generic.List<System.Int32>) -> System.Void
+  method OnMouseDown() -> System.Void
+  method MouseDownOnTile(System.Int32,RmkbGameView3D.PositionLocation) -> System.Void
+  method StartSelection(System.Collections.Generic.List<Card>) -> System.Void
+  method AddCardToSelection() -> System.Void
+  method PlaceSpheres() -> System.Void
+  method OnMouseDrag() -> System.Void
+  method OnMouseUp() -> System.Void
+  method GetRackWorldPosition(System.Int32,System.Int32) -> UnityEngine.Vector3
+  method GetBoardWorldPosition(System.Single,System.Single) -> UnityEngine.Vector3
+  method GetRackGridPosition() -> RmkbGameView3D.PositionLocation
+  method GetBoardGridPosition(TileContainer) -> RmkbGameView3D.PositionLocation
+  method GetMouseGridPositionAndLocation(TileContainer,System.Boolean) -> RmkbGameView3D.PositionLocation
+  method UpdateRackSize(System.Int32,System.Int32,System.Boolean) -> System.Void
+  method UpdateBoardSize(System.Int32,System.Int32,System.Int32,System.Int32,System.Boolean) -> System.Void
+  method ShowSeatCards(System.Int32) -> System.Void
+  method placeDebugSphere(UnityEngine.Vector3,UnityEngine.Color) -> System.Void
+  method FireMoveMadeEvent(BaseMovesData) -> System.Void
+  method .ctor() -> System.Void
+DEEP CLASS TileContainer
+  field 0x10 TileObject : UnityEngine.GameObject
+  field 0x18 CachedMatrial : UnityEngine.Material
+  field 0x20 TileHighlight : UnityEngine.GameObject
+  field 0x28 TextRef : TMPro.TextMeshPro
+  field 0x30 TextColor : UnityEngine.Color
+  field 0x40 CardData : Card
+  field 0x48 CachedTransform : UnityEngine.Transform
+  field 0x50 CurrentTargetPosition : UnityEngine.Vector3
+  field 0x5c IsFaceUp : System.Boolean
+  field [static] 0x0 _faceUpRotation : UnityEngine.Quaternion
+  field [static] 0x10 _faceDownRotation : UnityEngine.Quaternion
+  field [static] 0x20 _selectionOffset : UnityEngine.Vector3
+  field [static] 0x2c _hoverOffset : UnityEngine.Vector3
+  field [static] 0x38 _enemyPositionScale : UnityEngine.Vector3
+  field [static] 0x44 _normalScale : UnityEngine.Vector3
+  field [static] 0x50 OpaqueTile : UnityEngine.Color
+  field [static] 0x60 TransparentTile : UnityEngine.Color
+  field 0x60 _selectionTweenTime : System.Single
+  field 0x64 _animationSpeed : System.Single
+  field 0x68 _lastHoverOffset : TileContainer.PositionOffset
+  field 0x6c CurrentPositionX : System.Int32
+  field 0x70 CurrentPositionY : System.Int32
+  field 0x78 CurrentOwnerPlayerID : System.String
+  field 0x80 CurrentLocation : Card.CardLocation
+  field 0x84 NeedsMovementMarker : System.Boolean
+  method get__transparentTextColor() -> UnityEngine.Color
+  method Init(UnityEngine.Color,System.Boolean) -> System.Void
+  method KillTweens() -> System.Void
+  method SetPosition(UnityEngine.Vector3,System.Boolean,System.Boolean,System.Boolean,System.Boolean) -> System.Void
+  method DealCard(UnityEngine.Vector3,UnityEngine.Vector3,System.Boolean,System.Single,System.Boolean) -> System.Void
+  method SetSelected(System.Boolean) -> System.Void
+  method SetSelectedImp(System.Boolean,UnityEngine.Vector3,System.Single) -> System.Void
+  method SetHover(TileContainer.PositionOffset) -> System.Void
+  method UpdateCardData(Card) -> System.Void
+  method .ctor() -> System.Void
+  method [static] .cctor() -> System.Void
+DEEP CLASS Card
+  field 0x10 OwnerPlayerID : System.String
+  field 0x18 CardID : System.Int32
+  field 0x1c Location : Card.CardLocation
+  field 0x20 PositionX : System.Int32
+  field 0x24 PositionY : System.Int32
+  field 0x28 LocationAtStart : Card.CardLocation
+  field 0x2c PositionXAtStart : System.Int32
+  field 0x30 PositionYAtStart : System.Int32
+  field 0x34 MoveType : Card.MovmentType
+  field 0x38 Value : Card.CardValue
+  method .ctor() -> System.Void
+  method SetID(System.Int32,RmkbRulesSet) -> System.Void
+  method SetID(System.Int32) -> System.Void
+  method [static] CardValFromID(System.Int32,RmkbRulesSet) -> Card.CardValue
+  method Serialize(System.Collections.Generic.Dictionary<System.String,System.String>) -> System.Void
+  method Deserialize(System.Collections.Generic.Dictionary<System.String,System.String>) -> System.Boolean
+  method Clone() -> Card
+  method Equals(System.Object) -> System.Boolean
+  method ToString() -> System.String
+  method GetHashCode() -> System.Int32
+DEEP CLASS RmkbGameData
+  field 0x90 BoardSizeX : System.Int32
+  field 0x94 BoardSizeWidth : System.Int32
+  field 0x98 BoardSizeY : System.Int32
+  field 0x9c BoardSizeHeight : System.Int32
+  field 0xa0 Cards : Card[]
+  field 0xa8 CardsByCardIDs : System.Collections.Generic.Dictionary<System.Int32,Card>
+  field 0xb0 BoardCards : System.Collections.Generic.List<Card>
+  field 0xb8 StackCards : System.Collections.Generic.List<Card>
+  field 0xc0 CardsByPlayerID : System.Collections.Generic.Dictionary<System.String,System.Collections.Generic.List<Card>>
+  method .ctor() -> System.Void
+  method SetRackPositionsFromLocalData(RmkbGameData,System.String) -> System.Boolean
+  method SerializeLocal(System.Collections.Generic.Dictionary<System.String,System.String>) -> System.Void
+  method DeserializeLocal(System.Collections.Generic.Dictionary<System.String,System.String>) -> System.Boolean
+  method FinalizeActionLocal() -> System.Void
+  method SerializeToStr() -> System.Collections.Generic.List<System.String>
+  method DeserializeFromStr(System.Collections.Generic.List<System.String>) -> System.Void
+  method CloneLocal(BaseGameData) -> BaseGameData
+  method ClientByIndex(System.Int32) -> RmkbGameClient
+  method ClientByID(System.String) -> RmkbGameClient
+  method ClientBySeat(System.Int32) -> RmkbGameClient
+  method get_GameRulesPreset() -> RmkbGameData.GameRulesPresetTypes
+  method set_GameRulesPreset(RmkbGameData.GameRulesPresetTypes) -> System.Void
+  method ToString() -> System.String
+[recon] ==== auto-place recon done ====
