@@ -282,6 +282,50 @@ static bool hook_creategrid(void *selfManip, void *gameData, void *method) {
     return orig_creategrid(selfManip, gameData, method);
 }
 
+// Capture the RmkbMovesData of every move the game validates, so a manual drag
+// shows the exact payload a legal board->board rearrangement carries (tagged MAN)
+// next to ours (SYN).
+//
+// The obvious interception point, FireMoveMadeEvent, cannot be hooked: when the
+// game calls it at the end of a real drag, execution lands on the trampoline page
+// and dies (SIGBUS/KERN_PROTECTION_FAILURE at an address in no image). Hook the
+// validator instead — CheckMoveWithinBoardRange sees the same payload and returns
+// a plain bool, so there is no value-type return to corrupt either.
+static BOOL gSyntheticMove = NO;
+
+static void rkLogMove(void *md, NSString *tag);
+
+static bool (*orig_checkmove)(void*, void*, void*, void*, void*);
+static bool hook_checkmove(void *self, void *gdRef, void *md, void *vsRef, void *method) {
+    bool r = orig_checkmove(self, gdRef, md, vsRef, method);
+    // Log the game's own verdict, not our guess. "[auto] refused" upstream only
+    // means "the tile is still not on the target cell", which cannot tell a
+    // rejected move apart from one the game accepted and placed elsewhere.
+    rkLogMove(md, [NSString stringWithFormat:@"%@ inRange=%d",
+                   gSyntheticMove ? @"SYN" : @"MAN", (int)r]);
+    return r;
+}
+
+static void rkLogMove(void *md, NSString *tag) {
+    if (!md || !gLog) return;
+    NSMutableString *ids = [NSMutableString string];
+    void *lst = *(void**)((char*)md + 0x30);              // MovedCards : List<int>
+    if (lst) {
+        void *items = *(void**)((char*)lst + 0x10);
+        int sz = *(int*)((char*)lst + 0x18);
+        if (items && sz >= 0 && sz < 300) {
+            int *d = (int*)((char*)items + 0x20);
+            for (int i = 0; i < sz; i++) [ids appendFormat:@"%d ", d[i]];
+        }
+    }
+    LOG([NSString stringWithFormat:
+        @"[move %@] typ=%d seat=%d det=%d loc=%d x=%d y=%d attach=%d ai=%d cards=[%@]",
+        tag,
+        *(int*)((char*)md+0x10), *(int*)((char*)md+0x14), *(int*)((char*)md+0x18),
+        *(int*)((char*)md+0x1c), *(int*)((char*)md+0x20), *(int*)((char*)md+0x24),
+        *(int*)((char*)md+0x28), *(int*)((char*)md+0x2c), ids]);
+}
+
 static NSString *decodeString(void *s) {
     if (!s) return @"";
     int len = *(int*)((char*)s + 0x10);
@@ -358,6 +402,24 @@ static void installCaptureHook(const void *img) {
                   if (fp2) { f_MSHookFunction(fp2, (void*)hook_creategrid, (void**)&orig_creategrid);
                              LOG([NSString stringWithFormat:@"[rkreader] hook CreateGrid @ %p", fp2]); } }
     }
+    // Do NOT hook FireMoveMadeEvent: being void/one-arg is not enough. When the
+    // game calls it at the end of a real drag, control lands on the trampoline
+    // page and dies (SIGBUS / KERN_PROTECTION_FAILURE executing at an address in
+    // no image, Unity Main Thread).
+    //
+    // Capture the payload at the validator instead — it sees every move's
+    // RmkbMovesData and returns a plain bool, so there is no value-type return to
+    // corrupt. Opt-in via a file named rk_capture next to the log, so a crash here
+    // never breaks normal play: delete the file and the hook is gone.
+    NSString *flag = [[gLog stringByDeletingLastPathComponent]
+                      stringByAppendingPathComponent:@"rk_capture"];
+    if (mk && [[NSFileManager defaultManager] fileExistsAtPath:flag]) {
+        void *mcm = f_class_get_method_from_name(mk, "CheckMoveWithinBoardRange", 3);
+        void *fp3 = mcm ? *(void**)mcm : NULL;
+        if (fp3) { f_MSHookFunction(fp3, (void*)hook_checkmove, (void**)&orig_checkmove);
+                   LOG([NSString stringWithFormat:@"[rkreader] hook CheckMoveWithinBoardRange @ %p", fp3]); }
+        else LOG(@"[rkreader] CheckMoveWithinBoardRange not found");
+    }
     installed = YES;
 }
 
@@ -372,41 +434,36 @@ static const void *assemblyCSharpImage(void *domain) {
     return NULL;
 }
 
+static void ensureHooksMainThread(void);   // defined below
+
+// Hook installation used to run on this background thread, walking il2cpp as soon
+// as the symbols resolved. On some launches the runtime is still building its
+// tables at that moment and il2cpp_domain_get()/domain_get_assemblies() fault
+// (EXC_BAD_ACCESS near null), killing the game seconds after launch — which is
+// what happened when a manual rearrange was attempted right after installing.
+// Touch il2cpp only from the main thread, well after the app is up and running,
+// and retry until it takes.
 static void reconThread(void) {
-    // Auto-install the capture hooks (no trigger, no tile move needed). Wait for
-    // il2cpp to be up AND stable (assembly count steady) so we don't touch
-    // half-built tables during startup, then attach and hook.
-    LOG(@"[rkreader] capture thread: waiting for il2cpp…");
-    BOOL resolved = NO;
-    for (int i = 0; i < 1800 && !resolved; i++) { tryGrabUnityHandle(); resolved = resolveAPI(); usleep(100000); }
-    LOG([NSString stringWithFormat:@"[rkreader] resolved=%d unity=%p missing=%@", resolved, gUnity, missingSyms()]);
-    if (!resolved) return;
-    void *domain = NULL;
-    for (int i = 0; i < 1800 && !domain; i++) { domain = f_domain_get(); if (!domain) usleep(100000); }
-    LOG([NSString stringWithFormat:@"[rkreader] domain=%p", domain]);
-    if (!domain) return;
-    f_thread_attach(domain);
-    long prev = -1; int stable = 0; long lastn = 0;
-    for (int i = 0; i < 240; i++) {           // up to ~120s
-        size_t n = 0; f_domain_get_assemblies(domain, &n); lastn = (long)n;
-        if ((long)n > 50 && (long)n == prev) { if (++stable >= 4) break; }
-        else stable = 0;
-        prev = (long)n;
-        usleep(500000);
-    }
-    LOG([NSString stringWithFormat:@"[rkreader] assemblies stable ~%ld", lastn]);
-    const void *img = assemblyCSharpImage(domain);
-    LOG([NSString stringWithFormat:@"[rkreader] img=%p", img]);
-    if (!img) return;
-    gAsmImg = img;
-    // also locate UnityEngine.CoreModule for Object/Camera/Transform APIs
-    { size_t nas2 = 0; void **as2 = f_domain_get_assemblies(domain, &nas2);
-      for (size_t a = 0; a < nas2; a++) { const void *im = f_assembly_get_image(as2[a]);
-        const char *nm = im && f_image_get_name ? f_image_get_name(im) : NULL;
-        if (nm && strcmp(nm, "UnityEngine.CoreModule.dll") == 0) { gCoreImg = im; break; } } }
-    LOG([NSString stringWithFormat:@"[rkreader] coreImg=%p", gCoreImg]);
-    installCaptureHook(img);
-    LOG(@"[rkreader] capture hooks armed; SOLVE ready");
+    LOG(@"[rkreader] hook installer: waiting for the app to settle…");
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(12 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        __block int tries = 0;
+        [NSTimer scheduledTimerWithTimeInterval:3.0 repeats:YES block:^(NSTimer *tm) {
+            tries++;
+            // Only reach into the runtime while the app is actually foreground-active;
+            // that is the cheapest proxy we have for "Unity finished starting".
+            if ([UIApplication sharedApplication].applicationState != UIApplicationStateActive) {
+                if (tries > 200) [tm invalidate];
+                return;
+            }
+            ensureHooksMainThread();
+            if (gAsmImg || tries > 200) {
+                [tm invalidate];
+                LOG([NSString stringWithFormat:@"[rkreader] hook install %@ after %d tries",
+                     gAsmImg ? @"ok" : @"gave up", tries]);
+            }
+        }];
+    });
 }
 
 static void *reconEntry(void *unused) { @autoreleasepool { reconThread(); } return NULL; }
@@ -599,11 +656,13 @@ static void *rkBuildMove(NSArray *tilesOfSet, int targetX, int targetY, int atta
     *(int*)((char*)md + 0x1c) = 2;                       // TargetLocation = Board
     *(int*)((char*)md + 0x20) = targetX;
     *(int*)((char*)md + 0x24) = targetY;
-    // The game decides the final column itself (observed: tiles landed one cell
-    // away from the requested one, still forming the right set). Naming the card
-    // to attach to lets it place the tile in the intended set rather than having
-    // us fight it over an exact cell.
-    if (attachTo > 0) *(int*)((char*)md + 0x28) = attachTo;
+    // PreferredCardToAttatchTo is -1 for "none" — captured from real drags, which
+    // always carry -1 (typ=0 seat=0 det=0 loc=2 x=.. y=.. attach=-1 cards=[id]).
+    // Card ids start at 0, so the old "leave it at 0 / pass the anchor id" both
+    // named a real card to attach to and sent the tile somewhere else; that, not
+    // board legality, is why every board->board move came back refused.
+    (void)attachTo;
+    *(int*)((char*)md + 0x28) = -1;
     return md;
 }
 
@@ -632,7 +691,9 @@ static BOOL rkApplyMove(void *md) {
     if (!mFire) { LOG(@"[auto] FireMoveMadeEvent not found"); return NO; }
     void *args[1] = { md };
     void *exc = NULL;
+    gSyntheticMove = YES;
     f_runtime_invoke(mFire, gView, args, &exc);
+    gSyntheticMove = NO;
     return exc == NULL;
 }
 
@@ -1143,6 +1204,14 @@ static NSMutableDictionary *rkTake(NSMutableArray *pool, int c, int n, BOOL joke
 // real dependency graph. The turn is deliberately NOT confirmed: you review the
 // result and press the game's own confirm (or undo).
 + (void)autoTap {
+    // Start over from what the board looks like right now. Any run still in flight
+    // is abandoned first — its plan (and the cells it had reserved) described an
+    // older board, and letting it keep firing while we re-solve means the new plan
+    // is stale before it starts.
+    if (gAutoTimer) {
+        [gAutoTimer invalidate]; gAutoTimer = nil;
+        LOG(@"[auto] cancelled the run in progress; re-solving from the live board");
+    }
     ensureHooksMainThread();
     CGFloat H = gWin.bounds.size.height;
     CGFloat scale = gWin.screen.scale ?: [UIScreen mainScreen].scale;
@@ -1150,6 +1219,25 @@ static NSMutableDictionary *rkTake(NSMutableArray *pool, int c, int n, BOOL joke
     if (!tiles.count) { [self toast:@"타일을 못 읽음 — 매치 화면에서"]; return; }
     id res = rkComputeFromTiles(tiles);
     if (![res isKindOfClass:[NSDictionary class]]) { [self toast:[res description]]; return; }
+
+    // ---- detailed diagnostics: what the solver sees + decides ----
+    {
+        static const char *CC[4] = { "K", "Bl", "R", "Y" };
+        NSMutableArray *hs = [NSMutableArray array], *bs2 = [NSMutableArray array];
+        for (NSDictionary *t in tiles) {
+            int c = [t[@"c"] intValue], n = [t[@"n"] intValue]; BOOL j = [t[@"j"] boolValue];
+            NSString *lab = j ? @"JK" : [NSString stringWithFormat:@"%s%d", (c>=0&&c<4)?CC[c]:"?", n];
+            if ([t[@"loc"] intValue] == 1 && [t[@"mine"] boolValue]) [hs addObject:lab];
+            else if ([t[@"loc"] intValue] == 2)
+                [bs2 addObject:[NSString stringWithFormat:@"%@@(%@,%@)", lab, t[@"gx"], t[@"gy"]]];
+        }
+        LOG([NSString stringWithFormat:@"[auto] HAND(%lu): %@", (unsigned long)hs.count, [hs componentsJoinedByString:@" "]]);
+        LOG([NSString stringWithFormat:@"[auto] BOARD(%lu): %@", (unsigned long)bs2.count, [bs2 componentsJoinedByString:@" "]]);
+        LOG([NSString stringWithFormat:@"[auto] SOLVE placed=%@  PLACE=%@", res[@"placed"],
+             [res[@"place"] stringByReplacingOccurrencesOfString:@"\n" withString:@" | "]]);
+        LOG([NSString stringWithFormat:@"[auto] SETS=%@",
+             [res[@"sets"] stringByReplacingOccurrencesOfString:@"\n" withString:@" | "]]);
+    }
 
     int bx = 0, bw = 0, by = 0, bh = 0;
     if (!rkBoardBounds(tiles, &bx, &bw, &by, &bh)) { [self toast:@"보드 크기 못 읽음"]; return; }
@@ -1184,8 +1272,12 @@ static NSMutableDictionary *rkTake(NSMutableArray *pool, int c, int n, BOOL joke
     // So do the part that works, which is also the part that matters: put down
     // what SOLVE says to put down.
     //
-    // A set's tiles are in solver order, so one tile already on the board fixes
-    // the alignment: if set[j] sits at column X, set[i] belongs at X - j + i.
+    // Board->board moves are legal now that the payload is right (attach = -1), so
+    // plan the way a player actually rearranges: build each set the solver asked
+    // for in free space and move its tiles there, instead of bolting rack tiles
+    // onto whatever block happens to sit next door. That old rule could not express
+    // "pull Blue 4 out of the group of 4s to start a Blue 4-5-6 run", which is the
+    // shape most of the solver's answers take.
     static char occ[64][64];
     memset(occ, 0, sizeof(occ));
     for (NSDictionary *t in tiles) {
@@ -1194,303 +1286,206 @@ static NSMutableDictionary *rkTake(NSMutableArray *pool, int c, int n, BOOL joke
         if (cx >= 0 && cx < 64 && cy >= 0 && cy < 64) occ[cy][cx] = 1;
     }
 
-    NSMutableArray *targets = [NSMutableArray array];
-    int noAnchor = 0, noSlot = 0;
+    // A set is already done when its tiles are all on the board, in one row, in
+    // consecutive cells, with a blank or the board edge at each end. Leave those
+    // untouched and keep their cells reserved.
+    NSMutableArray *todo = [NSMutableArray array];
     for (NSArray *set in sets) {
-        int anchorIdx = -1, anchorX = 0, anchorY = 0;
-        BOOL aligned = YES;
-        NSMutableArray *mine = [NSMutableArray array];
-        for (int i = 0; i < (int)set.count; i++) {
-            NSDictionary *t = set[i];
-            if ([t[@"loc"] intValue] == 2) {
-                int gx = [t[@"gx"] intValue], gy = [t[@"gy"] intValue];
-                if (anchorIdx < 0) { anchorIdx = i; anchorX = gx; anchorY = gy; }
-                else if (gy != anchorY || gx - i != anchorX - anchorIdx) aligned = NO;
-            } else if ([t[@"loc"] intValue] == 1 && [t[@"mine"] boolValue]) {
-                [mine addObject:@{ @"t": t, @"i": @(i) }];
-            }
-        }
-        if (!mine.count) continue;                       // nothing of mine in this set
-        if (anchorIdx < 0) {                             // set is entirely from my rack
-            int n = (int)set.count, sx = -1, sy = -1;
-            for (int r = 0; r < bh && sx < 0; r++)
-                for (int c = 0; c + n <= bw; c++) {
-                    BOOL room = YES;
-                    for (int k = -1; k <= n && room; k++) {
-                        int cc = c + k;
-                        if (cc < 0 || cc >= bw) continue;
-                        if (occ[r][cc]) room = NO;
-                    }
-                    if (room) { sx = c; sy = r; break; }
-                }
-            if (sx < 0) { noSlot++; continue; }
-            for (int k = 0; k < n; k++) occ[sy][sx + k] = 1;
-            [targets addObject:@{ @"tiles": set, @"x": @(bx + sx), @"y": @(by + sy), @"attach": @0 }];
-            continue;
-        }
-        (void)aligned;
-        // Attach to the END of the block the anchor sits in, the way a player
-        // does, instead of deriving a column from the tile's index in the solver's
-        // list. That index only lines up for a run the board happens to store in
-        // the same order; for a group (same number, mixed colours) the board order
-        // is arbitrary, so the computed cell was off and the resulting board was
-        // illegal — which is why even single-tile plays next to an existing set
-        // were refused while plays into empty space worked.
-        int leftX = anchorX, rightX = anchorX;
-        while (leftX - 1 >= bx && occ[anchorY - by][leftX - 1 - bx]) leftX--;
-        while (rightX + 1 < bx + bw && occ[anchorY - by][rightX + 1 - bx]) rightX++;
-
-        BOOL isGroup = YES;                              // same number across the set?
-        int firstNum = -1;
+        BOOL allBoard = YES; int row = INT_MIN, lo = INT_MAX, hi = INT_MIN;
         for (NSDictionary *t in set) {
-            if ([t[@"j"] boolValue]) continue;
-            int n = [t[@"n"] intValue];
-            if (firstNum < 0) firstNum = n; else if (n != firstNum) { isGroup = NO; break; }
+            if ([t[@"loc"] intValue] != 2) { allBoard = NO; break; }
+            int gx = [t[@"gx"] intValue], gy = [t[@"gy"] intValue];
+            if (row == INT_MIN) row = gy; else if (gy != row) { allBoard = NO; break; }
+            lo = MIN(lo, gx); hi = MAX(hi, gx);
         }
-        // numbers currently at each end of the block
-        int leftNum = -1, rightNum = -1;
-        for (NSDictionary *t in tiles) {
-            if ([t[@"loc"] intValue] != 2 || [t[@"gy"] intValue] != anchorY) continue;
-            if ([t[@"gx"] intValue] == leftX)  leftNum  = [t[@"j"] boolValue] ? -1 : [t[@"n"] intValue];
-            if ([t[@"gx"] intValue] == rightX) rightNum = [t[@"j"] boolValue] ? -1 : [t[@"n"] intValue];
+        BOOL done = allBoard && (hi - lo + 1) == (int)set.count;
+        if (done) {
+            int r = row - by, l = lo - bx - 1, rr = hi - bx + 1;
+            if (l >= 0 && occ[r][l]) done = NO;
+            if (rr < bw && occ[r][rr]) done = NO;
         }
+        if (!done) [todo addObject:set];
+    }
+    // Every tile of a set we are rebuilding vacates its cell, so that space is
+    // available to the layout below.
+    for (NSArray *set in todo)
+        for (NSDictionary *t in set) {
+            if ([t[@"loc"] intValue] != 2) continue;
+            int cx = [t[@"gx"] intValue] - bx, cy = [t[@"gy"] intValue] - by;
+            if (cx >= 0 && cx < 64 && cy >= 0 && cy < 64) occ[cy][cx] = 0;
+        }
+    // Sets that let me play tiles from my rack come first: those are the ones that
+    // make progress, so they get the free space if it runs short.
+    todo = [[todo sortedArrayUsingComparator:^NSComparisonResult(NSArray *a, NSArray *b) {
+        int ra = 0, rb = 0;
+        for (NSDictionary *t in a) if ([t[@"loc"] intValue] == 1) ra++;
+        for (NSDictionary *t in b) if ([t[@"loc"] intValue] == 1) rb++;
+        if (ra != rb) return ra > rb ? NSOrderedAscending : NSOrderedDescending;
+        if (a.count != b.count) return a.count > b.count ? NSOrderedAscending : NSOrderedDescending;
+        return NSOrderedSame;
+    }] mutableCopy];
 
-        for (NSDictionary *m in mine) {
-            NSDictionary *t = m[@"t"];
-            int myNum = [t[@"j"] boolValue] ? -1 : [t[@"n"] intValue];
-            int tx = INT_MIN;
-            if (isGroup || myNum < 0) {                  // group or joker: either free end
-                if (rightX + 1 < bx + bw && !occ[anchorY - by][rightX + 1 - bx]) tx = ++rightX;
-                else if (leftX - 1 >= bx && !occ[anchorY - by][leftX - 1 - bx]) tx = --leftX;
-            } else {                                     // run: the end its value continues
-                if (rightNum >= 0 && myNum == rightNum + 1 &&
-                    rightX + 1 < bx + bw && !occ[anchorY - by][rightX + 1 - bx]) {
-                    tx = ++rightX; rightNum = myNum;
-                } else if (leftNum >= 0 && myNum == leftNum - 1 &&
-                           leftX - 1 >= bx && !occ[anchorY - by][leftX - 1 - bx]) {
-                    tx = --leftX; leftNum = myNum;
-                }
+    NSMutableArray *targets = [NSMutableArray array];
+    NSMutableArray *plans = [NSMutableArray array];   // ordered sets for the executor
+    int noAnchor = 0, noSlot = 0;
+    for (NSArray *set in todo) {
+        [plans addObject:@{ @"tiles": set }];
+        // The game makes room by itself: dropping a tile onto a row shoves the
+        // tiles to its right along (ClearSpaceForTilesOnRow) and grows the board
+        // when it has to (EnlargeBoardByOneRow). So a set does not need a
+        // pre-cleared strip — it needs one free cell to start on, whose LEFT
+        // neighbour is blank. Requiring n free cells with blanks on both sides is
+        // what produced "noSlot" and the "no free cell to evict into" dead end on
+        // a board that in fact had room.
+        //
+        // The left side is the part that matters: a tile dropped immediately right
+        // of a foreign block joins it, and the merged block is not a valid set, so
+        // the game refuses the move (observed: Blue 11 next to another Blue 11,
+        // refused a dozen times). Growing rightwards is safe because whatever sits
+        // there gets pushed.
+        int n = (int)set.count, sx = -1, sy = -1;
+        for (int r = 0; r < bh + 8 && sx < 0; r++)
+            for (int c = 0; c < bw; c++) {
+                if (occ[r][c]) continue;                       // start on a blank
+                if (c - 1 >= 0 && occ[r][c - 1]) continue;     // nothing joined on the left
+                sx = c; sy = r; break;
             }
-            if (tx == INT_MIN) { noSlot++; continue; }
-            occ[anchorY - by][tx - bx] = 1;
-            NSNumber *anchorId = nil;
-            for (NSDictionary *st in set)
-                if ([st[@"loc"] intValue] == 2) { anchorId = st[@"id"]; break; }
-            [targets addObject:@{ @"tiles": @[ t ], @"x": @(tx), @"y": @(anchorY),
-                                  @"attach": anchorId ?: @0 }];
+        if (sx < 0) { noSlot++; continue; }
+        // Reserve the cells the set will end up in, so later sets pick a different
+        // start; the tiles in between are the game's problem, not ours.
+        for (int k = 0; k < n && sx + k < 64; k++) occ[sy][sx + k] = 1;
+        NSMutableArray *ids = [NSMutableArray array];
+        for (NSDictionary *t in set) [ids addObject:t[@"id"]];
+        for (int i = 0; i < n; i++) {
+            NSDictionary *t = set[i];
+            int tx = bx + sx + i, ty = by + sy;
+            if ([t[@"loc"] intValue] == 2 &&
+                [t[@"gx"] intValue] == tx && [t[@"gy"] intValue] == ty) continue;
+            // idx says where this tile sits in its set: index 0 needs a clean start
+            // cell, the rest simply follow the tile before them.
+            [targets addObject:@{ @"tiles": @[ t ], @"x": @(tx), @"y": @(ty), @"attach": @(-1),
+                                  @"sx": @(bx + sx), @"ex": @(bx + sx + n - 1),
+                                  @"idx": @(i), @"ids": ids }];
         }
     }
     LOG([NSString stringWithFormat:@"[auto] board x0=%d w=%d y0=%d h=%d | plays=%lu needRearrange=%d noSlot=%d",
          bx, bw, by, bh, (unsigned long)targets.count, noAnchor, noSlot]);
+    // Full plan: every intended move, with its tiles and destination.
+    {
+        static const char *CC[4] = { "K", "Bl", "R", "Y" };
+        for (NSUInteger i = 0; i < targets.count; i++) {
+            NSDictionary *m = targets[i];
+            NSMutableString *w = [NSMutableString string];
+            for (NSDictionary *t in m[@"tiles"]) {
+                int c = [t[@"c"] intValue], n = [t[@"n"] intValue];
+                [w appendFormat:@"%@%@ ", [t[@"loc"] intValue]==1 ? @"rack:" : @"board:",
+                 [t[@"j"] boolValue] ? @"JK" : [NSString stringWithFormat:@"%s%d",(c>=0&&c<4)?CC[c]:"?",n]];
+            }
+            LOG([NSString stringWithFormat:@"[auto] PLAN#%lu [%@]-> (%@,%@) attach=%@",
+                 (unsigned long)i+1, w, m[@"x"], m[@"y"], m[@"attach"]]);
+        }
+    }
     if (!targets.count) { [self toast:@"배치할 세트 없음"]; return; }
 
-    // Execute adaptively instead of following a fixed order: a precomputed order
-    // deadlocks as soon as a target cell still holds a tile that has not moved
-    // yet. Each tick re-reads the live board, plays any move whose destination is
-    // now free, and if nothing is playable, evicts one blocking tile to a spare
-    // cell to break the cycle.
+    // Assemble set by set, tile by tile, always reading where tiles ACTUALLY are.
+    // The game compacts a row as it applies a move, so a tile can land a column
+    // away from the cell we named; a plan pinned to precomputed cells then thinks
+    // nothing happened and re-fires the same move forever. Re-deriving the chain
+    // from the live board each tick removes the whole idea of a move "failing":
+    // whatever the game did, the next tile simply goes after the last one that
+    // landed.
     [gAutoTimer invalidate];
-    __block NSMutableArray *pend = [targets mutableCopy];
-    __block NSMutableDictionary *attempts = [NSMutableDictionary dictionary];
-    __block int ticks = 0, done = 0, stalled = 0, rotate = 0;
-    __block NSUInteger lastLeft = NSUIntegerMax;
-    gAutoTimer = [NSTimer scheduledTimerWithTimeInterval:0.3 repeats:YES block:^(NSTimer *tm) {
+    __block NSMutableArray *sq = [plans mutableCopy];
+    __block int ticks = 0, done = 0, idle = 0;
+    gAutoTimer = [NSTimer scheduledTimerWithTimeInterval:0.35 repeats:YES block:^(NSTimer *tm) {
         CGFloat hh = gWin.bounds.size.height, sc = gWin.screen.scale ?: [UIScreen mainScreen].scale;
         NSArray *live = rkGatherTiles(hh, sc);
-        int stallBudget = (int)pend.count * 2 + 6;   // give each pending move a few goes
-        if (++ticks > 400 || !pend.count || !live.count || stalled >= stallBudget) {
+        if (++ticks > 300 || !sq.count || !live.count || idle > 30) {
             [tm invalidate]; gAutoTimer = nil;
-            LOG([NSString stringWithFormat:@"[auto] finished done=%d left=%lu ticks=%d stalled=%d",
-                 done, (unsigned long)pend.count, ticks, stalled]);
-            [RKOverlay toast:stalled >= 5
-                ? @"자동배치 중단 — 수가 거부됨(내 턴이 아니거나 배치 불가)"
-                : [NSString stringWithFormat:@"자동배치 종료 — %d수 (남음 %lu)",
-                   done, (unsigned long)pend.count]];
+            LOG([NSString stringWithFormat:@"[auto] finished moves=%d sets_left=%lu ticks=%d",
+                 done, (unsigned long)sq.count, ticks]);
+            [RKOverlay toast:[NSString stringWithFormat:@"자동배치 종료 — %d수 (남은 세트 %lu)",
+                              done, (unsigned long)sq.count]];
             return;
         }
-        // Use the container's rendered position (cx/cy/cloc), not the Card's —
-        // see rkGatherTiles: the Card copy can lag, which previously made every
-        // move look unfinished and repeat forever.
-        NSMutableDictionary *at = [NSMutableDictionary dictionary];   // "x,y" -> cardID
-        NSMutableDictionary *posOf = [NSMutableDictionary dictionary];// cardID -> tile
+        NSMutableDictionary *posOf = [NSMutableDictionary dictionary];
+        NSMutableSet *occupied = [NSMutableSet set];
         for (NSDictionary *t in live) {
             posOf[t[@"id"]] = t;
             if ([t[@"loc"] intValue] == 2)
-                at[[NSString stringWithFormat:@"%@,%@", t[@"gx"], t[@"gy"]]] = t[@"id"];
+                [occupied addObject:[NSString stringWithFormat:@"%@,%@", t[@"gx"], t[@"gy"]]];
         }
-        // A set is done when every one of its tiles sits on its target run.
-        for (NSInteger i = pend.count - 1; i >= 0; i--) {
-            NSDictionary *m = pend[i];
-            // Done once every tile of the move is on the board. Requiring the
-            // exact planned cell kept re-issuing moves for tiles the game had
-            // already placed a column over, which is what scattered them.
-            NSArray *tl = m[@"tiles"];
-            BOOL all = YES;
-            for (NSUInteger k = 0; k < tl.count && all; k++) {
-                NSDictionary *cur = posOf[((NSDictionary *)tl[k])[@"id"]];
-                all = cur && [cur[@"loc"] intValue] == 2;
-            }
-            if (all) [pend removeObjectAtIndex:i];
+
+        NSDictionary *cur = sq[0];
+        NSArray *stiles = cur[@"tiles"];
+        // Longest prefix of the set already sitting in consecutive cells of one row.
+        int k = 0, ax = 0, ay = 0, x0 = 0;
+        for (; k < (int)stiles.count; k++) {
+            NSDictionary *pos = posOf[((NSDictionary *)stiles[k])[@"id"]];
+            if (!pos || [pos[@"loc"] intValue] != 2) break;
+            int gx = [pos[@"gx"] intValue], gy = [pos[@"gy"] intValue];
+            if (k == 0) { ax = gx; ay = gy; x0 = gx; }
+            else if (gy != ay || gx != ax + 1) break;
+            else ax = gx;
         }
-        // If the pending count stops falling, the game is refusing our moves —
-        // typically because the turn ended. Give up rather than spin.
-        if (pend.count == lastLeft) stalled++; else { stalled = 0; lastLeft = pend.count; }
-        if (!pend.count) return;                                       // next tick reports done
-        // Group the board into its current runs (maximal contiguous tiles in a
-        // row) so we can reason about what a move takes *away*, not just where it
-        // lands. Taking the middle out of a run leaves a fragment, the board is
-        // momentarily illegal and the game refuses the move — that is why AUTO
-        // always stalled partway with sets it could never place.
-        NSMutableDictionary *runOf = [NSMutableDictionary dictionary];   // cardID -> run id
-        NSMutableDictionary *runIdx = [NSMutableDictionary dictionary];  // cardID -> index in run
-        NSMutableDictionary *runLen = [NSMutableDictionary dictionary];  // run id  -> length
-        {
-            NSMutableDictionary *rows = [NSMutableDictionary dictionary];
-            for (NSDictionary *t in live) {
-                if ([t[@"loc"] intValue] != 2) continue;
-                NSMutableArray *r = rows[t[@"gy"]];
-                if (!r) { r = [NSMutableArray array]; rows[t[@"gy"]] = r; }
-                [r addObject:t];
+        // A prefix only counts if it starts clean: a first tile still wedged inside
+        // somebody else's block has to be pulled out, not built on.
+        if (k > 0 && [occupied containsObject:[NSString stringWithFormat:@"%d,%d", x0 - 1, ay]]) k = 0;
+
+        if (k >= (int)stiles.count) {                 // fully assembled
+            [sq removeObjectAtIndex:0]; idle = 0;
+            LOG([NSString stringWithFormat:@"[auto] set done (%lu tiles); sets_left=%lu",
+                 (unsigned long)stiles.count, (unsigned long)sq.count]);
+            return;
+        }
+
+        NSDictionary *next = stiles[k];
+        int tx = INT_MIN, ty = 0;
+        if (k == 0) {
+            // Start on a cell with a blank either side, so the first tile does not
+            // join a neighbouring block. Rows past the bottom are fair game: the
+            // game grows the board when a tile lands there.
+            for (int r = 0; r < bh + 8 && tx == INT_MIN; r++)
+                for (int c = 0; c < bw; c++) {
+                    NSString *me = [NSString stringWithFormat:@"%d,%d", bx + c, by + r];
+                    NSString *lf = [NSString stringWithFormat:@"%d,%d", bx + c - 1, by + r];
+                    NSString *rt = [NSString stringWithFormat:@"%d,%d", bx + c + 1, by + r];
+                    if ([occupied containsObject:me] || [occupied containsObject:lf] ||
+                        [occupied containsObject:rt]) continue;
+                    tx = bx + c; ty = by + r; break;
+                }
+            if (tx == INT_MIN) {
+                LOG(@"[auto] no isolated cell to start this set on; skipping it");
+                [sq removeObjectAtIndex:0]; idle++;
+                return;
             }
-            int rid = 0;
-            for (NSNumber *y in rows) {
-                NSArray *r = [rows[y] sortedArrayUsingComparator:^NSComparisonResult(id a, id b) {
-                    return [a[@"gx"] compare:b[@"gx"]]; }];
-                NSMutableArray *cur = [NSMutableArray array];
-                int prev = INT_MIN;
-                for (NSDictionary *t in r) {
-                    int x = [t[@"gx"] intValue];
-                    if (prev != INT_MIN && x != prev + 1) {
-                        rid++; runLen[@(rid)] = @(cur.count);
-                        for (NSUInteger k = 0; k < cur.count; k++) {
-                            runOf[cur[k]] = @(rid); runIdx[cur[k]] = @(k);
-                        }
-                        cur = [NSMutableArray array];
-                    }
-                    [cur addObject:t[@"id"]];
-                    prev = x;
-                }
-                if (cur.count) {
-                    rid++; runLen[@(rid)] = @(cur.count);
-                    for (NSUInteger k = 0; k < cur.count; k++) {
-                        runOf[cur[k]] = @(rid); runIdx[cur[k]] = @(k);
-                    }
-                }
+        } else {
+            tx = ax + 1; ty = ay;
+            if ([occupied containsObject:[NSString stringWithFormat:@"%d,%d", tx, ty]]) {
+                // The row continues into someone else's tiles. Rebuild this set from
+                // scratch somewhere clear instead of forcing the cell.
+                LOG(@"[auto] continuation occupied; rebuilding this set elsewhere");
+                NSMutableArray *rest = [sq mutableCopy];
+                [rest removeObjectAtIndex:0]; [rest addObject:cur];
+                sq = rest; idle++;
+                return;
             }
         }
 
-        // Playable = destination clear AND every source run is either fully
-        // consumed or only loses tiles from one of its ends (remainder >= 3).
-        NSDictionary *chosen = nil;
-        NSMutableArray *playable = [NSMutableArray array];
-        for (NSDictionary *m in pend) {
-            NSArray *tl = m[@"tiles"];
-            NSMutableArray *ids = [NSMutableArray array];
-            for (NSDictionary *t in tl) [ids addObject:t[@"id"]];
-            int sx = [m[@"x"] intValue], sy = [m[@"y"] intValue];
-            BOOL ok = YES;
-            for (NSUInteger k = 0; k < tl.count && ok; k++) {
-                NSNumber *occupant = at[[NSString stringWithFormat:@"%d,%d", sx + (int)k, sy]];
-                if (occupant && ![ids containsObject:occupant]) ok = NO;
-            }
-            if (ok) {
-                NSMutableDictionary *takenBy = [NSMutableDictionary dictionary];  // run -> indices
-                for (NSNumber *cid in ids) {
-                    NSNumber *r = runOf[cid];
-                    if (!r) continue;                       // from my rack: always free
-                    NSMutableArray *v = takenBy[r];
-                    if (!v) { v = [NSMutableArray array]; takenBy[r] = v; }
-                    [v addObject:runIdx[cid]];
-                }
-                for (NSNumber *r in takenBy) {
-                    NSArray *idxs = [takenBy[r] sortedArrayUsingSelector:@selector(compare:)];
-                    int len = [runLen[r] intValue], take = (int)idxs.count;
-                    if (take == len) continue;              // run fully consumed: fine
-                    int lo = [idxs.firstObject intValue], hi = [idxs.lastObject intValue];
-                    BOOL contiguous = (hi - lo + 1) == take;
-                    BOOL atEnd = (lo == 0) || (hi == len - 1);
-                    if (!contiguous || !atEnd || (len - take) < 3) { ok = NO; break; }
-                }
-            }
-            if (ok) { [playable addObject:m]; }
-        }
-        // Rotate through the playable moves instead of retrying whichever comes
-        // first. A refused move often becomes legal once another one lands, so
-        // hammering the same target four times and then abandoning the whole plan
-        // (what happened before) throws away moves that were still achievable.
-        if (playable.count) {
-            chosen = playable[rotate % playable.count];
-            rotate++;
-        }
-        if (chosen) {
-            NSArray *ctiles = chosen[@"tiles"];
-            int tx = [chosen[@"x"] intValue], ty = [chosen[@"y"] intValue];
-            // Give up on a move the game keeps refusing rather than reissuing it
-            // forever (observed: the same card fired 15+ times, never landing).
-            NSString *key = [NSString stringWithFormat:@"%d,%d", tx, ty];
-            int tries = [attempts[key] intValue] + 1;
-            attempts[key] = @(tries);
-            if (tries > 12) {                      // truly stuck: stop reserving its slot
-                LOG([NSString stringWithFormat:@"[auto] dropping set at (%d,%d) after %d tries", tx, ty, tries]);
-                [pend removeObject:chosen];
-                return;
-            }
-            // Recording a manual drag proved board->board moves are legal and
-            // that no intermediate pick-up state exists, so the payload is what
-            // differs. MoveMakingSeat is the one field guessed outright (always
-            // 0) — cycle it across retries and see which, if any, is accepted.
-            // Say *why* a move is not taking. Without this the log only showed
-            // "fired" over and over, so it was impossible to tell a wrongly
-            // computed cell from a placement the game considers illegal.
-            if (tries >= 2) {
-                NSMutableString *around = [NSMutableString string];
-                for (int c = tx - 2; c <= tx + (int)ctiles.count + 1; c++) {
-                    NSString *what = @".";
-                    for (NSDictionary *t in live)
-                        if ([t[@"loc"] intValue] == 2 && [t[@"gx"] intValue] == c &&
-                            [t[@"gy"] intValue] == ty) {
-                            what = [t[@"j"] boolValue] ? @"J"
-                                 : [NSString stringWithFormat:@"%@:%@", t[@"c"], t[@"n"]];
-                            break;
-                        }
-                    [around appendFormat:@"%d=%@ ", c, what];
-                }
-                NSMutableString *what = [NSMutableString string];
-                for (NSDictionary *t in ctiles)
-                    [what appendFormat:@"%@%@:%@ ", [t[@"loc"] intValue] == 1 ? @"rack " : @"board ",
-                     t[@"c"], t[@"n"]];
-                LOG([NSString stringWithFormat:@"[auto] refused: placing [%@] at (%d,%d); row: %@",
-                     what, tx, ty, around]);
-            }
-            void *md = rkBuildMove(ctiles, tx, ty, [chosen[@"attach"] intValue]);
-            BOOL fired = md ? rkApplyMove(md) : NO;
-            if (fired) done++;
-            LOG([NSString stringWithFormat:@"[auto] set(%lu tiles) -> (%d,%d) fired=%d try=%d left=%lu",
-                 (unsigned long)ctiles.count, tx, ty, fired, tries, (unsigned long)pend.count]);
-        } else {
-            // Deadlock: evict whatever sits on the first pending target.
-            NSDictionary *m = pend[0];
-            NSNumber *blocker = at[[NSString stringWithFormat:@"%@,%@", m[@"x"], m[@"y"]]];
-            NSDictionary *blockTile = nil;
-            if (blocker) for (NSDictionary *t in live) if ([t[@"id"] isEqual:blocker]) { blockTile = t; break; }
-            int fx = -1, fy = -1;
-            for (int r = 0; r < bh && fx < 0; r++)
-                for (int c = 0; c < bw; c++)
-                    if (!at[[NSString stringWithFormat:@"%d,%d", bx + c, by + r]]) { fx = bx + c; fy = by + r; break; }
-            if (blockTile && fx >= 0) {
-                void *md = rkBuildMove(@[ blockTile ], fx, fy, 0);
-                BOOL fired = md ? rkApplyMove(md) : NO;
-                LOG([NSString stringWithFormat:@"[auto] evict card=%@ -> (%d,%d) fired=%d",
-                     blocker, fx, fy, fired]);
-            } else {
-                LOG(@"[auto] stuck: no free cell to evict into");
-                [tm invalidate]; gAutoTimer = nil;
-                [RKOverlay toast:@"자동배치 막힘 — 보드에 빈 칸 없음"];
-                return;
-            }
-        }
+        void *md = rkBuildMove(@[ next ], tx, ty, -1);
+        BOOL fired = md ? rkApplyMove(md) : NO;
+        if (fired) { done++; idle = 0; } else idle++;
+        // Say which tile this is and where it currently sits: "fired" only means
+        // the event returned without throwing, so without this there is no way to
+        // tell a move the game applied elsewhere from one it ignored outright.
+        NSDictionary *np = posOf[next[@"id"]];
+        LOG([NSString stringWithFormat:
+             @"[auto] tile %d/%lu id=%@ c%@-%@ loc=%@ at(%@,%@) -> (%d,%d) fired=%d sets_left=%lu",
+             k + 1, (unsigned long)stiles.count, next[@"id"], next[@"c"], next[@"n"],
+             np[@"loc"] ?: @"?", np[@"gx"] ?: @"-", np[@"gy"] ?: @"-",
+             tx, ty, fired, (unsigned long)sq.count]);
         rkSyncVisuals();          // model moved; drag the 3D tiles to match
-        [RKOverlay toast:[NSString stringWithFormat:@"배치 중 — 남음 %lu", (unsigned long)pend.count]];
+        [RKOverlay toast:[NSString stringWithFormat:@"배치 중 — 세트 %lu개 남음", (unsigned long)sq.count]];
     }];
 }
 + (void)tap {
