@@ -462,22 +462,8 @@ static id rkComputeFromTiles(NSArray<NSDictionary*> *tiles) {
             else if (color >= 0 && color < NCOL && num >= 1 && num <= NNUM) rack[color][num]++;
         }
     }
-    // Diagnostic: log what the solver actually sees.
-    {
-        NSMutableString *bs = [NSMutableString stringWithString:@"[solve] BOARD:"];
-        NSMutableString *rs = [NSMutableString stringWithString:@"[solve] RACK:"];
-        int bt = 0, rt = 0;
-        const char *CN[4] = {"K","Bl","R","Y"};
-        for (int c = 0; c < NCOL; c++) for (int n = 1; n <= NNUM; n++) {
-            for (int x = 0; x < board[c][n]; x++) { [bs appendFormat:@" %s%d", CN[c], n]; bt++; }
-            for (int x = 0; x < rack[c][n]; x++)  { [rs appendFormat:@" %s%d", CN[c], n]; rt++; }
-        }
-        LOG([NSString stringWithFormat:@"[solve] board=%d(+%dJ) rack=%d(+%dJ)", bt, jb, rt, jr]);
-        LOG(bs); LOG(rs);
-    }
     static char place[4096], sets[8000];
     int placed = rk_solve(board, rack, jb, jr, place, sizeof(place), sets, sizeof(sets));
-    LOG([NSString stringWithFormat:@"[solve] placed=%d place=%s", placed, place[0]?place:"(none)"]);
     if (placed < 0) return @{ @"error": @"보드를 유효하게 배열할 수 없음." };
     return @{ @"placed": @(placed),
               @"place": [NSString stringWithUTF8String:place],
@@ -507,9 +493,9 @@ static BOOL ensureImages(void) {
 }
 
 static NSArray<NSDictionary*> *rkGatherTiles(CGFloat winHpoints, CGFloat scale) {
-    if (!ensureImages()) { LOG(@"[gather] images not ready"); return nil; }
+    if (!ensureImages()) { return nil; }
     if (!f_runtime_invoke || !f_class_get_type || !f_type_get_object ||
-        !f_class_from_name || !f_class_get_method_from_name) { LOG(@"[gather] missing APIs"); return nil; }
+        !f_class_from_name || !f_class_get_method_from_name) { return nil; }
     void *objC = f_class_from_name(gCoreImg, "UnityEngine", "Object");
     void *camC = f_class_from_name(gCoreImg, "UnityEngine", "Camera");
     void *trC  = f_class_from_name(gCoreImg, "UnityEngine", "Transform");
@@ -530,10 +516,9 @@ static NSArray<NSDictionary*> *rkGatherTiles(CGFloat winHpoints, CGFloat scale) 
     void *view = *(void**)((char*)varr + 0x20);
     void *arr = *(void**)((char*)view + 0x140);          // Tiles : TileContainer[]
     size_t cnt = (arr && f_array_length) ? f_array_length(arr) : 0;
-    LOG([NSString stringWithFormat:@"[gather] views=%zu Tiles=%zu", vn, cnt]);
     if (!arr || cnt == 0) return nil;
     void *cam = f_runtime_invoke(mMain, NULL, NULL, &exc);
-    if (!cam) { LOG(@"[gather] Camera.main null"); return nil; }
+    if (!cam) { return nil; }
 
     NSMutableArray *out = [NSMutableArray array];
     void **elems = (void**)((char*)arr + 0x20);
@@ -563,7 +548,6 @@ static NSArray<NSDictionary*> *rkGatherTiles(CGFloat winHpoints, CGFloat scale) 
                           @"loc": @(loc), @"mine": @(!(os.length>=3 && [os hasPrefix:@"AI_"])),
                           @"p": [NSValue valueWithCGPoint:CGPointMake(x, y)] }];
     }
-    LOG([NSString stringWithFormat:@"[gather] projected=%lu", (unsigned long)out.count]);
     return out;
 }
 
@@ -590,10 +574,26 @@ static NSArray<NSDictionary*> *rkGatherTiles(CGFloat winHpoints, CGFloat scale) 
             if (i == 0) CGContextMoveToPoint(ctx, p.x, p.y); else CGContextAddLineToPoint(ctx, p.x, p.y);
         }
         CGContextStrokePath(ctx);
+        CGContextSetShadowWithColor(ctx, CGSizeZero, 0, NULL);
         // dots at each node
         for (NSValue *v in pts) { CGPoint p = [v CGPointValue];
             CGContextSetFillColorWithColor(ctx, col.CGColor);
             CGContextFillEllipseInRect(ctx, CGRectMake(p.x-4, p.y-4, 8, 8)); }
+        // numbered badge (step order) near the first node
+        NSNumber *num = ln[@"num"];
+        if (num) {
+            CGPoint p0 = [pts[0] CGPointValue];
+            CGRect badge = CGRectMake(p0.x - 26, p0.y - 14, 24, 24);
+            CGContextSetFillColorWithColor(ctx, col.CGColor);
+            CGContextFillEllipseInRect(ctx, badge);
+            CGContextSetStrokeColorWithColor(ctx, [UIColor whiteColor].CGColor);
+            CGContextSetLineWidth(ctx, 2); CGContextStrokeEllipseInRect(ctx, badge);
+            NSDictionary *at = @{ NSFontAttributeName: [UIFont boldSystemFontOfSize:15],
+                                  NSForegroundColorAttributeName: [UIColor whiteColor] };
+            NSString *s = num.stringValue;
+            CGSize sz = [s sizeWithAttributes:at];
+            [s drawAtPoint:CGPointMake(badge.origin.x + (24-sz.width)/2, badge.origin.y + (24-sz.height)/2) withAttributes:at];
+        }
     }
     for (NSDictionary *h in self.highlights) {
         CGPoint p = [h[@"p"] CGPointValue];
@@ -626,6 +626,7 @@ static RKDrawView *gDraw = nil;
 static UILabel *gToast = nil;
 static UIButton *gClose = nil;
 static UIButton *gBtn = nil;
+static NSTimer *gRefreshTimer = nil;
 
 // tile colour index -> UIColor / dark-text flag
 static UIColor *rkTileColor(int c) {
@@ -680,14 +681,13 @@ static NSMutableDictionary *rkTake(NSMutableArray *pool, int c, int n, BOOL joke
     gToast.text = msg; gToast.hidden = NO;
     [gToast.superview bringSubviewToFront:gToast];
 }
-+ (void)tap {
-    LOG(@"[overlay] SOLVE tapped");
++ (void)refresh {
     CGFloat H = gWin.bounds.size.height;
     CGFloat scale = gWin.screen.scale ?: [UIScreen mainScreen].scale;
     NSArray *tiles = rkGatherTiles(H, scale);
     id res = rkComputeFromTiles(tiles);
-    if (![res isKindOfClass:[NSDictionary class]]) { [self toast:[res description]]; gClose.hidden = NO; gBtn.hidden = YES; return; }
-    if (!tiles.count) { [self toast:@"타일 좌표를 못 읽음 — 매치 화면에서 다시"]; gClose.hidden = NO; gBtn.hidden = YES; return; }
+    if (![res isKindOfClass:[NSDictionary class]]) { [self toast:[res description]]; return; }
+    if (!tiles.count) { [self toast:@"타일 좌표를 못 읽음 — 매치 화면에서 다시"]; return; }
     int placed = [res[@"placed"] intValue];
 
     // Pool for set lines = ONLY board tiles + my rack tiles (exclude the stack/
@@ -700,6 +700,7 @@ static NSMutableDictionary *rkTake(NSMutableArray *pool, int c, int n, BOOL joke
 
     // Lines: one per recommended set, connecting the current positions of its tiles.
     NSMutableArray *lines = [NSMutableArray array];
+    int setNo = 0;
     for (NSString *raw in [res[@"sets"] componentsSeparatedByString:@"\n"]) {
         NSString *s = [raw stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
         if (!s.length) continue;
@@ -720,7 +721,7 @@ static NSMutableDictionary *rkTake(NSMutableArray *pool, int c, int n, BOOL joke
                 NSMutableDictionary *td = [t isEqualToString:@"J"] ? rkTake(pool,0,0,YES,2) : rkTake(pool,rkColorIndex(t),num,NO,2);
                 if (td) [pts addObject:td[@"p"]]; }
         }
-        if (pts.count >= 2) [lines addObject:@{ @"pts": pts, @"color": lc }];
+        if (pts.count >= 2) [lines addObject:@{ @"pts": pts, @"color": lc, @"num": @(++setNo) }];
     }
 
     // Highlights: the rack tiles to play (bright cyan rings). Match on a fresh pass
@@ -740,12 +741,24 @@ static NSMutableDictionary *rkTake(NSMutableArray *pool, int c, int n, BOOL joke
     }
 
     gDraw.lines = lines; gDraw.highlights = hi; gDraw.hidden = NO; [gDraw setNeedsDisplay];
-    [self toast:[NSString stringWithFormat:@"%d장 낼 수 있어  ·  청록테=낼 타일, 선=세트  (✕ 닫기)", placed]];
-    gClose.hidden = NO; gBtn.hidden = YES;
+    [self toast:[NSString stringWithFormat:@"%d장  ·  ①②③=만들 순서, 청록테=낼 타일  (✕ 닫기)", placed]];
     [gDraw.superview bringSubviewToFront:gDraw];
+    [gToast.superview bringSubviewToFront:gToast];
     [gClose.superview bringSubviewToFront:gClose];
 }
-+ (void)hide { gDraw.hidden = YES; gToast.hidden = YES; gClose.hidden = YES; gBtn.hidden = NO; }
++ (void)tap {
+    LOG(@"[overlay] SOLVE tapped");
+    gClose.hidden = NO; gBtn.hidden = YES;
+    [self refresh];
+    // live update: re-solve + redraw so highlights/lines follow hand/board changes
+    [gRefreshTimer invalidate];
+    gRefreshTimer = [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *t){
+        if (gDraw.hidden) { [t invalidate]; return; }
+        [RKOverlay refresh];
+    }];
+}
++ (void)hide { [gRefreshTimer invalidate]; gRefreshTimer = nil;
+               gDraw.hidden = YES; gToast.hidden = YES; gClose.hidden = YES; gBtn.hidden = NO; }
 + (void)ensure {
     if (gWin) return;
     NSArray *scenes = [UIApplication sharedApplication].connectedScenes.allObjects;
