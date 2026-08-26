@@ -1245,14 +1245,21 @@ static UIButton *rkMakeButton(NSString *title, UIColor *tint, CGRect frame,
             int cx = [t[@"gx"] intValue] - bx, cy = [t[@"gy"] intValue] - by;
             if (cx >= 0 && cx < 64 && cy >= 0 && cy < 64) occ[cy][cx] = 0;
         }
-    // Sets that let me play tiles from my rack come first: those are the ones that
-    // make progress, so they get the free space if it runs short.
+    // Finish the sets that already have tiles on the board FIRST — most-placed
+    // first — and leave the sets that live entirely in the rack for last.
+    //
+    // The previous order was the reverse (rack-heavy sets first) and that is what
+    // made the run look frantic: seeding a rack set meant pulling a board tile out
+    // of a row that another, half-built set was sitting in, which compacted the
+    // row and slid that set's anchor away. Doing the board-resident sets first
+    // means by the time a tile is pulled for seeding, the set that shared its row
+    // is already complete and no longer cares.
     todo = [[todo sortedArrayUsingComparator:^NSComparisonResult(NSArray *a, NSArray *b) {
-        int ra = 0, rb = 0;
-        for (NSDictionary *t in a) if ([t[@"loc"] intValue] == 1) ra++;
-        for (NSDictionary *t in b) if ([t[@"loc"] intValue] == 1) rb++;
-        if (ra != rb) return ra > rb ? NSOrderedAscending : NSOrderedDescending;
-        if (a.count != b.count) return a.count > b.count ? NSOrderedAscending : NSOrderedDescending;
+        int ba = 0, bb = 0;
+        for (NSDictionary *t in a) if ([t[@"loc"] intValue] == 2) ba++;
+        for (NSDictionary *t in b) if ([t[@"loc"] intValue] == 2) bb++;
+        if (ba != bb) return ba > bb ? NSOrderedAscending : NSOrderedDescending;
+        if (a.count != b.count) return a.count < b.count ? NSOrderedAscending : NSOrderedDescending;
         return NSOrderedSame;
     }] mutableCopy];
 
