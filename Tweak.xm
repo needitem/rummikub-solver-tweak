@@ -1478,8 +1478,23 @@ static UIButton *rkMakeButton(NSString *title, UIColor *tint, CGRect frame,
         // tile just placed is immediately "a lone anchor in a busy row" again —
         // the condition re-triggers on its own result and the set never grows
         // (logged: K3 cycling 105 -> 107 -> 109 -> 105 forever).
-        BOOL loneInCrowd = (coreLen == 1 && [rowPop[@(coreRow)] intValue] > 1 &&
-                            ![cur[@"reseeded"] boolValue]);
+        // Relocate an anchor only once it is demonstrably being pushed around.
+        //
+        // "Its row has other tiles in it" is too broad — plenty of sets assemble
+        // fine in a busy row. But dropping the check entirely brings back the
+        // chase: as other sets take tiles out of a row the game compacts it, the
+        // anchor slides left every tick and the tile trying to join trails one
+        // column behind forever (R10 after an anchor going 106 -> 104 -> 103).
+        // So watch the anchor: if it has shifted since the last tick, that row is
+        // moving underneath us and the set needs solid ground.
+        NSNumber *anchorId = coreLen ? ((NSDictionary *)stiles[coreI])[@"id"] : nil;
+        int anchorNow = coreLen ? coreL : INT_MIN;
+        BOOL anchorSlid = NO;
+        if (anchorId && [cur[@"anchorId"] isEqual:anchorId]) {
+            anchorSlid = ([cur[@"anchorX"] intValue] != anchorNow);
+        }
+        if (anchorId) { cur[@"anchorId"] = anchorId; cur[@"anchorX"] = @(anchorNow); }
+        BOOL loneInCrowd = (coreLen == 1 && anchorSlid && ![cur[@"reseeded"] boolValue]);
 
         if (coreLen >= 1 && !loneInCrowd) {
             int m = coreI + coreLen;
