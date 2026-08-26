@@ -23,6 +23,8 @@ rootless jailbroken iOS (ElleKit/Theos). For personal use on your own device.
   own move pipeline, including board-to-board rearrangement, re-reading the live
   board each tick and carrying on from wherever tiles actually landed. Tapping it
   again stops the run; the next tap re-solves against the board as it is then.
+  **Hold** AUTO to set the pace, 0.1–1.0 s per tile — it applies mid-run and is
+  remembered.
 
 Both buttons are draggable — they float over a live board, so wherever they
 default to will sometimes be exactly where you need to reach.

@@ -827,10 +827,24 @@ static NSTimer *gRefreshTimer = nil;
 static UIButton *gAutoBtn = nil;
 static NSTimer *gAutoTimer = nil;   // paces auto-place: one move per tick
 
-// Seconds per placed tile. This is a hand reaching across a board, not a
-// script: below about half a second the tiles snap into place faster than
-// anyone could drag them.
-static const NSTimeInterval kAutoTick = 0.6;
+// Seconds per placed tile — hold the AUTO button to change it.
+//
+// This is a hand reaching across a board, not a script: below about half a
+// second the tiles snap into place faster than anyone could drag them. The
+// timer itself runs at a fixed poll and acts only once the interval has
+// elapsed, so a run in flight picks up a new setting on its next tile instead
+// of having to be restarted.
+static const NSTimeInterval kAutoPoll = 0.05;
+static const NSTimeInterval kAutoTickMin = 0.1, kAutoTickMax = 1.0;
+static NSString * const kAutoTickKey = @"RKAutoTick";
+static NSTimeInterval gAutoTick = 0.6;
+static UIView *gSpeedPanel = nil;
+static UILabel *gSpeedLabel = nil;
+
+static void rkLoadAutoTick(void) {
+    double v = [[NSUserDefaults standardUserDefaults] doubleForKey:kAutoTickKey];
+    if (v >= kAutoTickMin && v <= kAutoTickMax) gAutoTick = v;
+}
 
 // tile colour index -> UIColor / dark-text flag
 static int rkColorIndex(NSString *name) {
@@ -937,6 +951,68 @@ static UIButton *rkMakeButton(NSString *title, UIColor *tint, CGRect frame,
     gBtn.backgroundColor = on ? [[UIColor systemBlueColor] colorWithAlphaComponent:0.95]
                               : [[UIColor systemGreenColor] colorWithAlphaComponent:0.9];
     [gBtn setTitle:on ? @"👁 ON" : @"👁 손패" forState:UIControlStateNormal];
+}
+
+/* Hold AUTO to set how long each tile takes. */
++ (void)holdAuto:(UILongPressGestureRecognizer *)g {
+    if (g.state != UIGestureRecognizerStateBegan) return;
+    if (gSpeedPanel) { [self hideSpeedPanel]; return; }
+
+    UIView *root = gWin.rootViewController.view;
+    CGFloat w = 232, h = 92;
+    CGRect b = root.bounds;
+    CGFloat x = MIN(MAX(12, gAutoBtn.center.x - w / 2), b.size.width - w - 12);
+    CGFloat y = MIN(gAutoBtn.frame.origin.y + gAutoBtn.frame.size.height + 8,
+                    b.size.height - h - 12);
+
+    UIView *p = [[UIView alloc] initWithFrame:CGRectMake(x, y, w, h)];
+    p.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.85];
+    p.layer.cornerRadius = 12;
+    p.layer.zPosition = 100003;
+
+    gSpeedLabel = [[UILabel alloc] initWithFrame:CGRectMake(12, 8, w - 24, 20)];
+    gSpeedLabel.textColor = [UIColor whiteColor];
+    gSpeedLabel.font = [UIFont boldSystemFontOfSize:13];
+    [p addSubview:gSpeedLabel];
+
+    UISlider *s = [[UISlider alloc] initWithFrame:CGRectMake(12, 30, w - 24, 28)];
+    s.minimumValue = kAutoTickMin;
+    s.maximumValue = kAutoTickMax;
+    s.value = gAutoTick;
+    [s addTarget:self action:@selector(speedChanged:)
+        forControlEvents:UIControlEventValueChanged];
+    [p addSubview:s];
+
+    UIButton *close = [UIButton buttonWithType:UIButtonTypeSystem];
+    close.frame = CGRectMake(w - 74, 60, 62, 26);
+    [close setTitle:@"닫기" forState:UIControlStateNormal];
+    [close setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    close.titleLabel.font = [UIFont boldSystemFontOfSize:13];
+    close.backgroundColor = [[UIColor whiteColor] colorWithAlphaComponent:0.18];
+    close.layer.cornerRadius = 6;
+    [close addTarget:self action:@selector(hideSpeedPanel)
+    forControlEvents:UIControlEventTouchUpInside];
+    [p addSubview:close];
+
+    [root addSubview:p];
+    gSpeedPanel = p;
+    [self syncSpeedLabel];
+}
+
++ (void)speedChanged:(UISlider *)s {
+    gAutoTick = s.value;
+    [[NSUserDefaults standardUserDefaults] setDouble:gAutoTick forKey:kAutoTickKey];
+    [self syncSpeedLabel];
+}
+
++ (void)syncSpeedLabel {
+    gSpeedLabel.text = [NSString stringWithFormat:@"타일당 %.2f초", gAutoTick];
+}
+
++ (void)hideSpeedPanel {
+    [gSpeedPanel removeFromSuperview];
+    gSpeedPanel = nil;
+    gSpeedLabel = nil;
 }
 
 + (void)styleAuto:(BOOL)on {
@@ -1192,7 +1268,11 @@ static UIButton *rkMakeButton(NSString *title, UIColor *tint, CGRect frame,
     [self styleAuto:YES];
     __block NSMutableArray *sq = [plans mutableCopy];
     __block int ticks = 0, done = 0, idle = 0;
-    gAutoTimer = [NSTimer scheduledTimerWithTimeInterval:kAutoTick repeats:YES block:^(NSTimer *tm) {
+    __block NSTimeInterval acc = 0;
+    gAutoTimer = [NSTimer scheduledTimerWithTimeInterval:kAutoPoll repeats:YES block:^(NSTimer *tm) {
+        acc += kAutoPoll;
+        if (acc + 1e-6 < gAutoTick) return;
+        acc = 0;
         CGFloat hh = gWin.bounds.size.height, sc = gWin.screen.scale ?: [UIScreen mainScreen].scale;
         NSArray *live = rkGatherTiles(hh, sc);
         if (++ticks > 300 || !sq.count || !live.count || idle > 30) {
@@ -1345,8 +1425,14 @@ static UIButton *rkMakeButton(NSString *title, UIColor *tint, CGRect frame,
     UIButton *ab = rkMakeButton(@"⚙︎ AUTO", [UIColor systemOrangeColor],
                                 CGRectMake(b.size.width - 92, 106, 78, 40),
                                 self, @selector(autoTap));
+    UILongPressGestureRecognizer *hold =
+        [[UILongPressGestureRecognizer alloc] initWithTarget:self
+                                                      action:@selector(holdAuto:)];
+    hold.minimumPressDuration = 0.5;
+    [ab addGestureRecognizer:hold];
     [root addSubview:ab];
     gAutoBtn = ab;
+    rkLoadAutoTick();
 
 
 
