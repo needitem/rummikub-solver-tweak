@@ -827,6 +827,11 @@ static NSTimer *gRefreshTimer = nil;
 static UIButton *gAutoBtn = nil;
 static NSTimer *gAutoTimer = nil;   // paces auto-place: one move per tick
 
+// Seconds per placed tile. This is a hand reaching across a board, not a
+// script: below about half a second the tiles snap into place faster than
+// anyone could drag them.
+static const NSTimeInterval kAutoTick = 0.6;
+
 // tile colour index -> UIColor / dark-text flag
 static int rkColorIndex(NSString *name) {
     if ([name isEqualToString:@"Black"]) return 0;
@@ -1187,7 +1192,7 @@ static UIButton *rkMakeButton(NSString *title, UIColor *tint, CGRect frame,
     [self styleAuto:YES];
     __block NSMutableArray *sq = [plans mutableCopy];
     __block int ticks = 0, done = 0, idle = 0;
-    gAutoTimer = [NSTimer scheduledTimerWithTimeInterval:0.35 repeats:YES block:^(NSTimer *tm) {
+    gAutoTimer = [NSTimer scheduledTimerWithTimeInterval:kAutoTick repeats:YES block:^(NSTimer *tm) {
         CGFloat hh = gWin.bounds.size.height, sc = gWin.screen.scale ?: [UIScreen mainScreen].scale;
         NSArray *live = rkGatherTiles(hh, sc);
         if (++ticks > 300 || !sq.count || !live.count || idle > 30) {
