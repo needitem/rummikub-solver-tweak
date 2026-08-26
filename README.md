@@ -19,9 +19,10 @@ rootless jailbroken iOS (ElleKit/Theos). For personal use on your own device.
   that can go out this turn, live, over a transparent pass-through window (the
   game stays playable underneath). It re-solves twice a second, so the rings
   follow the hand and board as they change.
-- **AUTO** — plays the solution through the game's own move pipeline, including
-  board-to-board rearrangement, re-reading the live board each tick and carrying
-  on from wherever tiles actually landed.
+- **⚙︎ AUTO** — a start/stop toggle that plays the solution through the game's
+  own move pipeline, including board-to-board rearrangement, re-reading the live
+  board each tick and carrying on from wherever tiles actually landed. Tapping it
+  again stops the run; the next tap re-solves against the board as it is then.
 
 Both buttons are draggable — they float over a live board, so wherever they
 default to will sometimes be exactly where you need to reach.
@@ -55,7 +56,7 @@ done
 ```
 
 Relaunch the game, enter a match, then use **👁 손패** to see what you can play
-or **⚙︎ AUTO** to have it played.
+or **⚙︎ AUTO** to have it played — tap it again to stop.
 
 ## Notes / limitations
 

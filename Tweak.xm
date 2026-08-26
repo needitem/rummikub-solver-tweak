@@ -824,6 +824,7 @@ static RKDrawView *gDraw = nil;
 static UILabel *gToast = nil;
 static UIButton *gBtn = nil;
 static NSTimer *gRefreshTimer = nil;
+static UIButton *gAutoBtn = nil;
 static NSTimer *gAutoTimer = nil;   // paces auto-place: one move per tick
 
 // tile colour index -> UIColor / dark-text flag
@@ -932,6 +933,12 @@ static UIButton *rkMakeButton(NSString *title, UIColor *tint, CGRect frame,
                               : [[UIColor systemGreenColor] colorWithAlphaComponent:0.9];
     [gBtn setTitle:on ? @"👁 ON" : @"👁 손패" forState:UIControlStateNormal];
 }
+
++ (void)styleAuto:(BOOL)on {
+    gAutoBtn.backgroundColor = on ? [[UIColor systemRedColor] colorWithAlphaComponent:0.95]
+                                  : [[UIColor systemOrangeColor] colorWithAlphaComponent:0.9];
+    [gAutoBtn setTitle:on ? @"⏹ 중지" : @"⚙︎ AUTO" forState:UIControlStateNormal];
+}
 // One-shot: log every board/rack tile with its grid coords. This is how we learn
 // the board coordinate convention for auto-place — read-only, on the tile-gather
 // path that SOLVE already exercises (no extra hooks; hooking the move path and
@@ -989,13 +996,14 @@ static UIButton *rkMakeButton(NSString *title, UIColor *tint, CGRect frame,
 // real dependency graph. The turn is deliberately NOT confirmed: you review the
 // result and press the game's own confirm (or undo).
 + (void)autoTap {
-    // Start over from what the board looks like right now. Any run still in flight
-    // is abandoned first — its plan (and the cells it had reserved) described an
-    // older board, and letting it keep firing while we re-solve means the new plan
-    // is stale before it starts.
+    // A run in flight means this tap is "stop". Its plan described the board as
+    // it was when the run began, so there is nothing worth resuming later — the
+    // next tap re-solves against whatever the board looks like then.
     if (gAutoTimer) {
         [gAutoTimer invalidate]; gAutoTimer = nil;
-
+        [self styleAuto:NO];
+        [self toast:@"자동배치 중지"];
+        return;
     }
     ensureHooksMainThread();
     CGFloat H = gWin.bounds.size.height;
@@ -1176,6 +1184,7 @@ static UIButton *rkMakeButton(NSString *title, UIColor *tint, CGRect frame,
     // whatever the game did, the next tile simply goes after the last one that
     // landed.
     [gAutoTimer invalidate];
+    [self styleAuto:YES];
     __block NSMutableArray *sq = [plans mutableCopy];
     __block int ticks = 0, done = 0, idle = 0;
     gAutoTimer = [NSTimer scheduledTimerWithTimeInterval:0.35 repeats:YES block:^(NSTimer *tm) {
@@ -1183,6 +1192,7 @@ static UIButton *rkMakeButton(NSString *title, UIColor *tint, CGRect frame,
         NSArray *live = rkGatherTiles(hh, sc);
         if (++ticks > 300 || !sq.count || !live.count || idle > 30) {
             [tm invalidate]; gAutoTimer = nil;
+            [RKOverlay styleAuto:NO];
 
             [RKOverlay toast:[NSString stringWithFormat:@"자동배치 종료 — %d수 (남은 세트 %lu)",
                               done, (unsigned long)sq.count]];
@@ -1331,6 +1341,7 @@ static UIButton *rkMakeButton(NSString *title, UIColor *tint, CGRect frame,
                                 CGRectMake(b.size.width - 92, 106, 78, 40),
                                 self, @selector(autoTap));
     [root addSubview:ab];
+    gAutoBtn = ab;
 
 
 
