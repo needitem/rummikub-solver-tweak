@@ -15,10 +15,16 @@ rootless jailbroken iOS (ElleKit/Theos). For personal use on your own device.
   rack tiles you can place (runs + groups + jokers, full table rearrangement).
   Validated against the [`rummikub-solver`](https://pypi.org/project/rummikub-solver/)
   reference on 900+ random states.
-- **On-screen AR overlay** — a floating **🧮 SOLVE** button; tapping projects each
-  recommended set onto the real tiles with connecting lines, and rings the rack
-  tiles you should play, over a transparent pass-through window (game stays
-  playable).
+- **Hand overlay** — a floating **👁 손패** toggle rings the tiles in your hand
+  that can go out this turn, live, over a transparent pass-through window (the
+  game stays playable underneath). It re-solves twice a second, so the rings
+  follow the hand and board as they change.
+- **AUTO** — plays the solution through the game's own move pipeline, including
+  board-to-board rearrangement, re-reading the live board each tick and carrying
+  on from wherever tiles actually landed.
+
+Both buttons are draggable — they float over a live board, so wherever they
+default to will sometimes be exactly where you need to reach.
 
 ## Layout
 
@@ -48,16 +54,17 @@ for h in $(ldid -h /var/jb/usr/lib/TweakInject/rkreader.dylib | sed -n 's/^CDHas
 done
 ```
 
-Relaunch the game, enter a match, tap **🧮 SOLVE**.
+Relaunch the game, enter a match, then use **👁 손패** to see what you can play
+or **⚙︎ AUTO** to have it played.
 
 ## Notes / limitations
 
 - Objective is *max tiles placed*; it does not enforce the 30-point initial-meld
   rule, so before your first meld the suggestion may assume board access you don't
   have yet.
-- The overlay is a snapshot taken when you tap SOLVE; re-tap after sorting/moving.
-- Heavy rearrangements produce many crossing lines (shows groupings, not target
-  slots).
+- AUTO occasionally needs a second tap to finish the last set.
+- The tweak writes no log. Earlier versions kept a trace in the app container to
+  work out the move pipeline; that is understood now and the logging is gone.
 
 > Authorized personal use only, on your own device, against the free single-player
 > / vs-AI game. Not for cheating against human opponents.

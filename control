@@ -1,8 +1,8 @@
 Package: com.securitylab.rkreader
 Name: RK Reader
-Version: 0.6.0
+Version: 0.7.0
 Architecture: iphoneos-arm64
-Description: Own-device Rummikub helper — suppresses AppLovin interstitial/app-open/banner ads, and runs IL2CPP recon to locate the hand/board tile model. Rewarded ads left intact.
+Description: Own-device Rummikub helper — suppresses AppLovin interstitial/app-open/banner ads, rings the hand tiles you can play behind a draggable toggle, and plays the solver's moves through the game's own move pipeline. Rewarded ads left intact.
 Author: security-lab
 Maintainer: security-lab
 Section: Development

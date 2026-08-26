@@ -94,16 +94,6 @@ static const void *gCoreImg = NULL;  // UnityEngine.CoreModule.dll
 
 // Sandboxed App Store apps can't write to /var/mobile; log inside the app's own
 // container (always writable) and read it back as root over SSH.
-static NSString *gLog = nil;
-
-static void LOG(NSString *s) {
-    if (!gLog) return;
-    NSString *line = [s stringByAppendingString:@"\n"];
-    NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:gLog];
-    if (!fh) { [line writeToFile:gLog atomically:NO encoding:NSUTF8StringEncoding error:nil]; return; }
-    @try { [fh seekToEndOfFile]; [fh writeData:[line dataUsingEncoding:NSUTF8StringEncoding]]; }
-    @finally { [fh closeFile]; }
-}
 
 // Handle to UnityFramework, obtained via RTLD_NOLOAD (no load is triggered, so
 // there is no dyld-lock deadlock racing the app's own load of the framework).
@@ -179,8 +169,7 @@ static void dumpClass(void *klass) {
     const char *nm = f_class_get_name(klass);
     if (!nm || nm[0] == '<') return;
     const char *ns = f_class_get_namespace ? f_class_get_namespace(klass) : "";
-    LOG([NSString stringWithFormat:@"CLASS %s%s%s",
-         (ns && *ns) ? ns : "", (ns && *ns) ? "." : "", nm]);
+
     // Field name + offset + static flag only. We deliberately do NOT resolve
     // field TYPE names — il2cpp_type_get_name crashes on some generic/complex
     // field types, and offsets are what we need to read values later.
@@ -190,8 +179,7 @@ static void dumpClass(void *klass) {
         size_t off = f_field_get_offset ? f_field_get_offset(field) : 0;
         int flags = f_field_get_flags ? f_field_get_flags(field) : 0;
         BOOL isStatic = (flags & 0x10) != 0;   // FIELD_ATTRIBUTE_STATIC
-        LOG([NSString stringWithFormat:@"    %@ off=0x%zx %s",
-             isStatic ? @"[static]" : @"        ", off, fn ?: "?"]);
+
     }
 }
 
@@ -207,41 +195,6 @@ static void tryGrabUnityHandle(void) {
 
 // Deep dump of one named class: field types + method signatures. Used only for
 // well-behaved game-data classes (safe for type_get_name).
-static void deepDump(const void *img, const char *cname) {
-    if (!f_class_from_name) { LOG(@"DEEP: no class_from_name"); return; }
-    void *k = f_class_from_name(img, "", cname);
-    if (!k) { LOG([NSString stringWithFormat:@"DEEP %s: NOT FOUND", cname]); return; }
-    LOG([NSString stringWithFormat:@"DEEP CLASS %s", cname]);
-    void *it = NULL, *fld;
-    while ((fld = f_class_get_fields(k, &it))) {
-        const char *fn = f_field_get_name(fld);
-        size_t off = f_field_get_offset(fld);
-        int flags = f_field_get_flags(fld);
-        char *tn = (f_field_get_type && f_type_get_name) ? f_type_get_name(f_field_get_type(fld)) : NULL;
-        LOG([NSString stringWithFormat:@"  field %@0x%zx %s : %s",
-             (flags & 0x10) ? @"[static] " : @"", off, fn ?: "?", tn ?: "?"]);
-        if (tn && f_free) f_free(tn);
-    }
-    if (!f_class_get_methods) return;
-    void *mit = NULL; const void *m;
-    while ((m = f_class_get_methods(k, &mit))) {
-        const char *mn = f_method_get_name ? f_method_get_name(m) : "?";
-        unsigned pc = f_method_get_param_count ? f_method_get_param_count(m) : 0;
-        unsigned iflags = 0; unsigned fl = f_method_get_flags ? f_method_get_flags(m, &iflags) : 0;
-        char *rt = (f_method_get_return_type && f_type_get_name) ? f_type_get_name(f_method_get_return_type(m)) : NULL;
-        NSMutableString *ps = [NSMutableString string];
-        for (unsigned i = 0; i < pc && f_method_get_param && f_type_get_name; i++) {
-            char *pt = f_type_get_name(f_method_get_param(m, i));
-            if (i) [ps appendString:@","];
-            [ps appendFormat:@"%s", pt ?: "?"];
-            if (pt && f_free) f_free(pt);
-        }
-        LOG([NSString stringWithFormat:@"  method %@%s(%@) -> %s",
-             (fl & 0x10) ? @"[static] " : @"", mn ?: "?", ps, rt ?: "?"]);
-        if (rt && f_free) f_free(rt);
-    }
-}
-
 // ================= Card reader =================
 //
 // RmkbGameData layout (from recon):
@@ -252,16 +205,6 @@ static void deepDump(const void *img, const char *cname) {
 // CardValue: 0x10 Color:int  0x14 NumericValue:int  0x18 IsJoker:bool
 
 static void *gGameData = NULL;                    // captured live RmkbGameData*
-static NSString *gCardsLog = nil;
-
-static void CLOG(NSString *s) {
-    if (!gCardsLog) return;
-    NSString *line = [s stringByAppendingString:@"\n"];
-    NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:gCardsLog];
-    if (!fh) { [line writeToFile:gCardsLog atomically:NO encoding:NSUTF8StringEncoding error:nil]; return; }
-    @try { [fh seekToEndOfFile]; [fh writeData:[line dataUsingEncoding:NSUTF8StringEncoding]]; }
-    @finally { [fh closeFile]; }
-}
 
 // Hook on RmkbGameData::SetRackPositionsFromLocalData(self, other, str, method)
 // to capture a live RmkbGameData instance pointer (`self`).
@@ -291,40 +234,7 @@ static bool hook_creategrid(void *selfManip, void *gameData, void *method) {
 // and dies (SIGBUS/KERN_PROTECTION_FAILURE at an address in no image). Hook the
 // validator instead — CheckMoveWithinBoardRange sees the same payload and returns
 // a plain bool, so there is no value-type return to corrupt either.
-static BOOL gSyntheticMove = NO;
 
-static void rkLogMove(void *md, NSString *tag);
-
-static bool (*orig_checkmove)(void*, void*, void*, void*, void*);
-static bool hook_checkmove(void *self, void *gdRef, void *md, void *vsRef, void *method) {
-    bool r = orig_checkmove(self, gdRef, md, vsRef, method);
-    // Log the game's own verdict, not our guess. "[auto] refused" upstream only
-    // means "the tile is still not on the target cell", which cannot tell a
-    // rejected move apart from one the game accepted and placed elsewhere.
-    rkLogMove(md, [NSString stringWithFormat:@"%@ inRange=%d",
-                   gSyntheticMove ? @"SYN" : @"MAN", (int)r]);
-    return r;
-}
-
-static void rkLogMove(void *md, NSString *tag) {
-    if (!md || !gLog) return;
-    NSMutableString *ids = [NSMutableString string];
-    void *lst = *(void**)((char*)md + 0x30);              // MovedCards : List<int>
-    if (lst) {
-        void *items = *(void**)((char*)lst + 0x10);
-        int sz = *(int*)((char*)lst + 0x18);
-        if (items && sz >= 0 && sz < 300) {
-            int *d = (int*)((char*)items + 0x20);
-            for (int i = 0; i < sz; i++) [ids appendFormat:@"%d ", d[i]];
-        }
-    }
-    LOG([NSString stringWithFormat:
-        @"[move %@] typ=%d seat=%d det=%d loc=%d x=%d y=%d attach=%d ai=%d cards=[%@]",
-        tag,
-        *(int*)((char*)md+0x10), *(int*)((char*)md+0x14), *(int*)((char*)md+0x18),
-        *(int*)((char*)md+0x1c), *(int*)((char*)md+0x20), *(int*)((char*)md+0x24),
-        *(int*)((char*)md+0x28), *(int*)((char*)md+0x2c), ids]);
-}
 
 static NSString *decodeString(void *s) {
     if (!s) return @"";
@@ -334,60 +244,19 @@ static NSString *decodeString(void *s) {
     return [NSString stringWithCharacters:c length:(NSUInteger)len];
 }
 
-static void dumpCards(void) {
-    void *gd = gGameData;
-    if (!gd) { CLOG(@"(no live game data captured yet — make a move / rearrange your rack, then re-trigger)"); return; }
-    void *cardsArr = *(void**)((char*)gd + 0xa0);
-    if (!cardsArr) { CLOG(@"(Cards array null)"); return; }
-    size_t n = f_array_length ? f_array_length(cardsArr) : *(size_t*)((char*)cardsArr + 0x18);
-    if (n > 1000) { CLOG([NSString stringWithFormat:@"(implausible card count %zu — aborting)", n]); return; }
-    void **elems = (void**)((char*)cardsArr + 0x20);
-
-    NSMutableDictionary<NSString*,NSMutableArray*> *buckets = [NSMutableDictionary dictionary];
-    for (size_t i = 0; i < n; i++) {
-        void *card = elems[i];
-        if (!card) continue;
-        int loc = *(int*)((char*)card + 0x1c);
-        void *owner = *(void**)((char*)card + 0x10);
-        void *val = *(void**)((char*)card + 0x38);
-        if (!val) continue;
-        int color = *(int*)((char*)val + 0x10);
-        int num   = *(int*)((char*)val + 0x14);
-        bool joker = *(bool*)((char*)val + 0x18);
-        NSString *ownerStr = decodeString(owner);
-        NSString *bucket = loc == 2 ? @"BOARD" :
-                           loc == 0 ? @"STACK" :
-                           [NSString stringWithFormat:@"RACK[%@]", ownerStr.length ? ownerStr : @"?"];
-        static const char *COLORS[4] = { "Black", "Blue", "Red", "Yellow" };
-        NSString *tile = joker ? @"Joker"
-            : [NSString stringWithFormat:@"%s-%d",
-               (color >= 0 && color < 4) ? COLORS[color] : "C?", num + 1];
-        NSMutableArray *arr = buckets[bucket];
-        if (!arr) { arr = [NSMutableArray array]; buckets[bucket] = arr; }
-        [arr addObject:tile];
-    }
-    CLOG([NSString stringWithFormat:@"===== snapshot (%zu cards) tile=c<color>-<number>, JK=joker =====", n]);
-    for (NSString *k in [buckets.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
-        NSArray *a = buckets[k];
-        CLOG([NSString stringWithFormat:@"%@ (%lu): %@", k, (unsigned long)a.count,
-              [a componentsJoinedByString:@" "]]);
-    }
-    CLOG(@"===== end snapshot =====");
-}
-
 static void installCaptureHook(const void *img) {
     static BOOL installed = NO;
     if (installed) return;
     if (!f_MSHookFunction || !f_class_from_name || !f_class_get_method_from_name) {
-        LOG(@"[rkreader] cannot hook (missing MSHookFunction/class APIs)"); return;
+         return;
     }
     void *k = f_class_from_name(img, "", "RmkbGameData");
-    if (!k) { LOG(@"[rkreader] RmkbGameData class not found for hook"); return; }
+    if (!k) { return; }
     void *m = f_class_get_method_from_name(k, "SetRackPositionsFromLocalData", 2);
-    if (!m) { LOG(@"[rkreader] SetRackPositionsFromLocalData not found"); return; }
+    if (!m) { return; }
     void *fp = *(void**)m;                     // MethodInfo.methodPointer (offset 0)
     if (fp) { f_MSHookFunction(fp, (void*)hook_setrack, (void**)&orig_setrack);
-              LOG([NSString stringWithFormat:@"[rkreader] hook setrack @ %p", fp]); }
+               }
     // Also hook CreateGrid on the manipulator for capture without a tile move.
     void *mk = f_class_from_name(img, "", "RmkbGameDataManipulator");
     if (mk) {
@@ -400,26 +269,13 @@ static void installCaptureHook(const void *img) {
         void *m2 = f_class_get_method_from_name(mk, "CreateGrid", 1);
         if (m2) { void *fp2 = *(void**)m2;
                   if (fp2) { f_MSHookFunction(fp2, (void*)hook_creategrid, (void**)&orig_creategrid);
-                             LOG([NSString stringWithFormat:@"[rkreader] hook CreateGrid @ %p", fp2]); } }
+                              } }
     }
     // Do NOT hook FireMoveMadeEvent: being void/one-arg is not enough. When the
     // game calls it at the end of a real drag, control lands on the trampoline
     // page and dies (SIGBUS / KERN_PROTECTION_FAILURE executing at an address in
-    // no image, Unity Main Thread).
-    //
-    // Capture the payload at the validator instead — it sees every move's
-    // RmkbMovesData and returns a plain bool, so there is no value-type return to
-    // corrupt. Opt-in via a file named rk_capture next to the log, so a crash here
-    // never breaks normal play: delete the file and the hook is gone.
-    NSString *flag = [[gLog stringByDeletingLastPathComponent]
-                      stringByAppendingPathComponent:@"rk_capture"];
-    if (mk && [[NSFileManager defaultManager] fileExistsAtPath:flag]) {
-        void *mcm = f_class_get_method_from_name(mk, "CheckMoveWithinBoardRange", 3);
-        void *fp3 = mcm ? *(void**)mcm : NULL;
-        if (fp3) { f_MSHookFunction(fp3, (void*)hook_checkmove, (void**)&orig_checkmove);
-                   LOG([NSString stringWithFormat:@"[rkreader] hook CheckMoveWithinBoardRange @ %p", fp3]); }
-        else LOG(@"[rkreader] CheckMoveWithinBoardRange not found");
-    }
+    // no image, Unity Main Thread). Calling it ourselves is fine — it is only
+    // hooking it that breaks.
     installed = YES;
 }
 
@@ -444,7 +300,7 @@ static void ensureHooksMainThread(void);   // defined below
 // Touch il2cpp only from the main thread, well after the app is up and running,
 // and retry until it takes.
 static void reconThread(void) {
-    LOG(@"[rkreader] hook installer: waiting for the app to settle…");
+
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(12 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         __block int tries = 0;
@@ -459,8 +315,7 @@ static void reconThread(void) {
             ensureHooksMainThread();
             if (gAsmImg || tries > 200) {
                 [tm invalidate];
-                LOG([NSString stringWithFormat:@"[rkreader] hook install %@ after %d tries",
-                     gAsmImg ? @"ok" : @"gave up", tries]);
+
             }
         }];
     });
@@ -475,19 +330,19 @@ static void *reconEntry(void *unused) { @autoreleasepool { reconThread(); } retu
 
 %group ALHooks
 %hook MAInterstitialAd
-- (void)showAd { LOG(@"[ads] blocked interstitial showAd"); }
-- (void)showAdForPlacement:(id)p { LOG(@"[ads] blocked interstitial showAdForPlacement:"); }
-- (void)showAdForPlacement:(id)p customData:(id)c { LOG(@"[ads] blocked interstitial showAdForPlacement:customData:"); }
-- (void)showAdForPlacement:(id)p customData:(id)c viewController:(id)vc { LOG(@"[ads] blocked interstitial (vc)"); }
+- (void)showAd { }
+- (void)showAdForPlacement:(id)p { }
+- (void)showAdForPlacement:(id)p customData:(id)c { }
+- (void)showAdForPlacement:(id)p customData:(id)c viewController:(id)vc { }
 %end
 %hook MAAppOpenAd
-- (void)showAd { LOG(@"[ads] blocked appopen showAd"); }
-- (void)showAdForPlacement:(id)p { LOG(@"[ads] blocked appopen showAdForPlacement:"); }
-- (void)showAdForPlacement:(id)p customData:(id)c { LOG(@"[ads] blocked appopen showAdForPlacement:customData:"); }
-- (void)showAdForPlacement:(id)p customData:(id)c viewController:(id)vc { LOG(@"[ads] blocked appopen (vc)"); }
+- (void)showAd { }
+- (void)showAdForPlacement:(id)p { }
+- (void)showAdForPlacement:(id)p customData:(id)c { }
+- (void)showAdForPlacement:(id)p customData:(id)c viewController:(id)vc { }
 %end
 %hook MAAdView
-- (void)loadAd { LOG(@"[ads] blocked banner loadAd"); }
+- (void)loadAd { }
 %end
 %end  // group ALHooks
 
@@ -511,26 +366,26 @@ static BOOL rkIsAdViewController(NSString *cn) {
 - (void)presentViewController:(UIViewController *)vc animated:(BOOL)a completion:(void(^)(void))c {
     NSString *cn = vc ? NSStringFromClass([vc class]) : @"nil";
     if (rkIsAdViewController(cn)) {
-        LOG([@"[ads] blocked presentation: " stringByAppendingString:cn]);
+
         if (c) c();                       // let the caller's completion run
         return;
     }
-    LOG([@"[ads] present VC: " stringByAppendingString:cn]);
+
     %orig(vc, a, c);
 }
 %end
 %end  // group VCDiag
 
 static void adWaitAndInit(void) {
-    for (int i = 0; i < 900; i++) {          // up to ~90s
+    for (int i = 0; i < 900; i++) { // up to ~90s
         if (NSClassFromString(@"MAInterstitialAd") || NSClassFromString(@"MAAdView")) {
             %init(ALHooks);
-            LOG(@"[ads] AppLovin hooks installed");
+
             return;
         }
         usleep(100000);
     }
-    LOG(@"[ads] AppLovin classes never appeared");
+
 }
 static void *adEntry(void *unused) { @autoreleasepool { adWaitAndInit(); } return NULL; }
 
@@ -547,10 +402,10 @@ static id rkComputeFromTiles(NSArray<NSDictionary*> *tiles) {
     for (NSDictionary *t in tiles) {
         int loc = [t[@"loc"] intValue], color = [t[@"c"] intValue], num = [t[@"n"] intValue];
         BOOL joker = [t[@"j"] boolValue], mine = [t[@"mine"] boolValue];
-        if (loc == 2) {                                 // Board
+        if (loc == 2) { // Board
             if (joker) jb++;
             else if (color >= 0 && color < NCOL && num >= 1 && num <= NNUM) board[color][num]++;
-        } else if (loc == 1 && mine) {                  // my rack
+        } else if (loc == 1 && mine) { // my rack
             if (joker) jr++;
             else if (color >= 0 && color < NCOL && num >= 1 && num <= NNUM) rack[color][num]++;
         }
@@ -563,7 +418,7 @@ static id rkComputeFromTiles(NSArray<NSDictionary*> *tiles) {
         if (loc == 2) nBoard++;
         else if (loc == 1) ([t[@"mine"] boolValue] ? nMine++ : nOther++);
     }
-    LOG([NSString stringWithFormat:@"[solve] board=%d myRack=%d otherRacks=%d", nBoard, nMine, nOther]);
+
 
     static char place[4096], sets[8000];
     int placed = rk_solve(board, rack, jb, jr, place, sizeof(place), sets, sizeof(sets));
@@ -634,22 +489,22 @@ static void *rkBuildMove(NSArray *tilesOfSet, int targetX, int targetY, int atta
     if (!f_object_new || !f_object_get_class || !f_class_from_name ||
         !f_class_get_method_from_name || !f_runtime_invoke) return NULL;
     void *cls = f_class_from_name(gAsmImg, "", "RmkbMovesData");
-    if (!cls) { LOG(@"[auto] RmkbMovesData class not found"); return NULL; }
+    if (!cls) { return NULL; }
     void *md = f_object_new(cls);
-    if (!md) { LOG(@"[auto] object_new failed"); return NULL; }
+    if (!md) { return NULL; }
     void *ctor = f_class_get_method_from_name(cls, ".ctor", 0);
     if (ctor) { void *exc = NULL; f_runtime_invoke(ctor, md, NULL, &exc);
-                if (exc) { LOG(@"[auto] .ctor threw"); return NULL; } }
+                if (exc) { return NULL; } }
     void *lst = *(void**)((char*)md + 0x30);
-    if (!lst) { LOG(@"[auto] MovedCards null after ctor"); return NULL; }
+    if (!lst) { return NULL; }
     void *lcls = f_object_get_class(lst);
     void *mAdd = lcls ? f_class_get_method_from_name(lcls, "Add", 1) : NULL;
-    if (!mAdd) { LOG(@"[auto] List.Add not found"); return NULL; }
+    if (!mAdd) { return NULL; }
     for (NSDictionary *t in tilesOfSet) {
         int idv = [t[@"id"] intValue];
         void *args[1] = { &idv }; void *exc = NULL;
         f_runtime_invoke(mAdd, lst, args, &exc);
-        if (exc) { LOG(@"[auto] List.Add threw"); return NULL; }
+        if (exc) { return NULL; }
         void *card = (void *)(uintptr_t)[t[@"cptr"] unsignedLongLongValue];
         if (card) *(int*)((char*)card + 0x34) = 2;      // Card.MoveType, as the game sets
     }
@@ -685,15 +540,13 @@ static void *rkFindObject(const void *img, const char *ns, const char *name);  /
 static BOOL rkApplyMove(void *md) {
     if (!md) return NO;
     if (!gView) gView = rkFindObject(gAsmImg, "", "RmkbGameView3D");
-    if (!gView) { LOG(@"[auto] no view"); return NO; }
+    if (!gView) { return NO; }
     void *vcls = f_class_from_name(gAsmImg, "", "RmkbGameView3D");
     void *mFire = vcls ? f_class_get_method_from_name(vcls, "FireMoveMadeEvent", 1) : NULL;
-    if (!mFire) { LOG(@"[auto] FireMoveMadeEvent not found"); return NO; }
+    if (!mFire) { return NO; }
     void *args[1] = { md };
     void *exc = NULL;
-    gSyntheticMove = YES;
     f_runtime_invoke(mFire, gView, args, &exc);
-    gSyntheticMove = NO;
     return exc == NULL;
 }
 
@@ -713,7 +566,7 @@ static void rkSyncVisuals(void) {
     void *mWorld = vcls ? f_class_get_method_from_name(vcls, "GetBoardWorldPosition", 2) : NULL;
     void *mGetPos = trC ? f_class_get_method_from_name(trC, "get_position", 0) : NULL;
     void *mSetPos = trC ? f_class_get_method_from_name(trC, "set_position", 1) : NULL;
-    if (!mWorld || !mGetPos || !mSetPos) { LOG(@"[sync] missing transform/world methods"); return; }
+    if (!mWorld || !mGetPos || !mSetPos) { return; }
 
     int bOrgX = 100, bOrgY = 100;                         // board origin (RmkbGameData)
     if (gGameData) {
@@ -722,12 +575,12 @@ static void rkSyncVisuals(void) {
     }
     void *arr = *(void**)((char*)gView + 0x140);          // Tiles : TileContainer[]
     size_t cnt = (arr && f_array_length) ? f_array_length(arr) : 0;
-    if (!cnt) { LOG(@"[sync] no tiles"); return; }
+    if (!cnt) { return; }
     void **elems = (void**)((char*)arr + 0x20);
 
     BOOL calibrated = NO;
     int moved = 0;
-    for (size_t pass = 0; pass < 2; pass++) {            // pass 0 = calibrate, 1 = apply
+    for (size_t pass = 0; pass < 2; pass++) { // pass 0 = calibrate, 1 = apply
         for (size_t i = 0; i < cnt; i++) {
             void *tc = elems[i]; if (!tc) continue;
             void *transform = *(void**)((char*)tc + 0x48); if (!transform) continue;
@@ -753,10 +606,9 @@ static void rkSyncVisuals(void) {
             float *p = (float*)((char*)pbox + 0x10);
             float d = fabsf(w[0]-p[0]) + fabsf(w[1]-p[1]) + fabsf(w[2]-p[2]);
             if (pass == 0) {
-                if (d < 0.05f) {                           // this tile is already where the formula says
+                if (d < 0.05f) { // this tile is already where the formula says
                     calibrated = YES;
-                    LOG([NSString stringWithFormat:@"[sync] calibration OK at cell(%d,%d) delta=%.3f",
-                         (int)gx, (int)gy, d]);
+
                     break;
                 }
                 continue;
@@ -776,11 +628,11 @@ static void rkSyncVisuals(void) {
             if (!exc) moved++;
         }
         if (pass == 0 && !calibrated) {
-            LOG(@"[sync] calibration failed — not moving anything");
+
             return;
         }
     }
-    LOG([NSString stringWithFormat:@"[sync] repositioned %d tiles", moved]);
+
 }
 
 // Find the first live instance of a UnityEngine.Object subclass, the same way the
@@ -814,14 +666,14 @@ static BOOL rkBoardBounds(NSArray *tiles, int *x0, int *w, int *y0, int *h) {
         int sy = *(int*)((char*)gGameData + 0x98), gh = *(int*)((char*)gGameData + 0x9c);
         if (gw > 0 && gh > 0 && gw < 64 && gh < 64) {
             *x0 = sx; *w = gw; *y0 = sy; *h = gh;
-            LOG([NSString stringWithFormat:@"[auto] board(gameData) x0=%d w=%d y0=%d h=%d", sx, gw, sy, gh]);
+
             return YES;
         }
     }
     // No tile-extent fallback: stray tiles outside the play area dragged the
     // inferred origin to x=99 and every queued target landed off-board, so the
     // game refused the lot. Better to refuse to run than to aim at nothing.
-    LOG(@"[auto] board bounds unavailable (game data not captured)");
+
     return NO;
 }
 
@@ -925,8 +777,7 @@ static NSArray<NSDictionary*> *rkGatherTiles(CGFloat winHpoints, CGFloat scale) 
     static NSString *lastMyID = nil;
     if (myID && ![myID isEqualToString:lastMyID]) {
         lastMyID = myID;
-        LOG([NSString stringWithFormat:@"[gather] my player id = %@ (%lu face-up rack tiles)",
-             myID, (unsigned long)best]);
+
     }
     return res;
 }
@@ -934,47 +785,14 @@ static NSArray<NSDictionary*> *rkGatherTiles(CGFloat winHpoints, CGFloat scale) 
 // ================= On-screen overlay (button + result panel) =================
 // A dedicated top-level window that passes touches through EXCEPT on its own
 // controls, so the game keeps working while our button/panel stay visible+tappable.
-// A transparent view that draws highlight rings on tiles to play + polylines
+// A transparent view that draws highlight rings on the tiles to play
 // connecting each recommended set. Non-interactive (touches pass through).
 @interface RKDrawView : UIView
 @property (nonatomic, strong) NSArray *highlights;  // dicts {p:NSValue, color:UIColor}
-@property (nonatomic, strong) NSArray *lines;       // dicts {pts:NSArray<NSValue>, color:UIColor}
 @end
 @implementation RKDrawView
 - (void)drawRect:(CGRect)r {
     CGContextRef ctx = UIGraphicsGetCurrentContext();
-    for (NSDictionary *ln in self.lines) {
-        NSArray *pts = ln[@"pts"]; if (pts.count < 2) continue;
-        UIColor *col = ln[@"color"] ?: [UIColor whiteColor];
-        CGContextSetStrokeColorWithColor(ctx, col.CGColor);
-        CGContextSetLineWidth(ctx, 4); CGContextSetLineCap(ctx, kCGLineCapRound); CGContextSetLineJoin(ctx, kCGLineJoinRound);
-        CGContextSetShadowWithColor(ctx, CGSizeZero, 4, [UIColor blackColor].CGColor);
-        for (NSUInteger i = 0; i < pts.count; i++) {
-            CGPoint p = [pts[i] CGPointValue];
-            if (i == 0) CGContextMoveToPoint(ctx, p.x, p.y); else CGContextAddLineToPoint(ctx, p.x, p.y);
-        }
-        CGContextStrokePath(ctx);
-        CGContextSetShadowWithColor(ctx, CGSizeZero, 0, NULL);
-        // dots at each node
-        for (NSValue *v in pts) { CGPoint p = [v CGPointValue];
-            CGContextSetFillColorWithColor(ctx, col.CGColor);
-            CGContextFillEllipseInRect(ctx, CGRectMake(p.x-4, p.y-4, 8, 8)); }
-        // numbered badge (step order) near the first node
-        NSNumber *num = ln[@"num"];
-        if (num) {
-            CGPoint p0 = [pts[0] CGPointValue];
-            CGRect badge = CGRectMake(p0.x - 26, p0.y - 14, 24, 24);
-            CGContextSetFillColorWithColor(ctx, col.CGColor);
-            CGContextFillEllipseInRect(ctx, badge);
-            CGContextSetStrokeColorWithColor(ctx, [UIColor whiteColor].CGColor);
-            CGContextSetLineWidth(ctx, 2); CGContextStrokeEllipseInRect(ctx, badge);
-            NSDictionary *at = @{ NSFontAttributeName: [UIFont boldSystemFontOfSize:15],
-                                  NSForegroundColorAttributeName: [UIColor whiteColor] };
-            NSString *s = num.stringValue;
-            CGSize sz = [s sizeWithAttributes:at];
-            [s drawAtPoint:CGPointMake(badge.origin.x + (24-sz.width)/2, badge.origin.y + (24-sz.height)/2) withAttributes:at];
-        }
-    }
     for (NSDictionary *h in self.highlights) {
         CGPoint p = [h[@"p"] CGPointValue];
         UIColor *col = h[@"color"] ?: [UIColor whiteColor];
@@ -1004,22 +822,11 @@ static NSArray<NSDictionary*> *rkGatherTiles(CGFloat winHpoints, CGFloat scale) 
 static UIWindow *gWin = nil;
 static RKDrawView *gDraw = nil;
 static UILabel *gToast = nil;
-static UIButton *gClose = nil;
 static UIButton *gBtn = nil;
-static UIButton *gAutoBtn = nil;
 static NSTimer *gRefreshTimer = nil;
 static NSTimer *gAutoTimer = nil;   // paces auto-place: one move per tick
 
 // tile colour index -> UIColor / dark-text flag
-static UIColor *rkTileColor(int c) {
-    switch (c) {
-        case 0: return [UIColor colorWithWhite:0.15 alpha:1];       // Black
-        case 1: return [UIColor colorWithRed:0.15 green:0.45 blue:0.95 alpha:1]; // Blue
-        case 2: return [UIColor colorWithRed:0.90 green:0.20 blue:0.20 alpha:1]; // Red
-        case 3: return [UIColor colorWithRed:0.95 green:0.80 blue:0.10 alpha:1]; // Yellow
-        default: return [UIColor grayColor];
-    }
-}
 static int rkColorIndex(NSString *name) {
     if ([name isEqualToString:@"Black"]) return 0;
     if ([name isEqualToString:@"Blue"]) return 1;
@@ -1028,21 +835,6 @@ static int rkColorIndex(NSString *name) {
     return -1;
 }
 // A tile chip: colour c (or -1 joker), number n (0=none). Returns a UILabel.
-static UILabel *rkChip(int c, int n, BOOL joker) {
-    UILabel *l = [[UILabel alloc] init];
-    l.textAlignment = NSTextAlignmentCenter;
-    l.font = [UIFont boldSystemFontOfSize:16];
-    l.layer.cornerRadius = 6; l.layer.masksToBounds = YES;
-    l.layer.borderWidth = 1; l.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.25].CGColor;
-    if (joker) { l.text = @"★"; l.backgroundColor = [UIColor colorWithWhite:0.5 alpha:1]; l.textColor = [UIColor whiteColor]; }
-    else {
-        l.text = [NSString stringWithFormat:@"%d", n];
-        l.backgroundColor = rkTileColor(c);
-        l.textColor = (c == 3) ? [UIColor blackColor] : [UIColor whiteColor];  // yellow -> dark text
-    }
-    return l;
-}
-
 // find an unused tile in `pool` matching (c,n) [or joker]; prefer loc==preferLoc.
 static NSMutableDictionary *rkTake(NSMutableArray *pool, int c, int n, BOOL joker, int preferLoc) {
     NSMutableDictionary *best = nil;
@@ -1058,63 +850,52 @@ static NSMutableDictionary *rkTake(NSMutableArray *pool, int c, int n, BOOL joke
     return best;
 }
 
+// A floating control: tap to act, drag to move it out of the way.
+static UIButton *rkMakeButton(NSString *title, UIColor *tint, CGRect frame,
+                              id target, SEL action) {
+    UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
+    b.frame = frame;
+    b.backgroundColor = [tint colorWithAlphaComponent:0.9];
+    [b setTitle:title forState:UIControlStateNormal];
+    [b setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    b.titleLabel.font = [UIFont boldSystemFontOfSize:13];
+    b.layer.cornerRadius = 8;
+    b.layer.zPosition = 100000;
+    [b addTarget:target action:action forControlEvents:UIControlEventTouchUpInside];
+    [b addGestureRecognizer:[[UIPanGestureRecognizer alloc]
+        initWithTarget:target action:NSSelectorFromString(@"drag:")]];
+    return b;
+}
+
 @implementation RKOverlay
 + (void)toast:(NSString *)msg {
     gToast.text = msg; gToast.hidden = NO;
     [gToast.superview bringSubviewToFront:gToast];
 }
+// Ring the rack tiles the solver can place this turn, and nothing else.
+//
+// The earlier version also drew a line through every recommended set. On a real
+// board that is a dozen crossing lines describing groupings you cannot act on
+// directly anyway — the only thing worth knowing at a glance is which tiles in
+// your hand can go out. AUTO handles the rest.
 + (void)refresh {
     CGFloat H = gWin.bounds.size.height;
     CGFloat scale = gWin.screen.scale ?: [UIScreen mainScreen].scale;
     NSArray *tiles = rkGatherTiles(H, scale);
-    [self logGrid:tiles];
+    if (!tiles.count) { [self toast:@"타일 좌표를 못 읽음 — 매치 화면에서"]; return; }
     id res = rkComputeFromTiles(tiles);
     if (![res isKindOfClass:[NSDictionary class]]) { [self toast:[res description]]; return; }
-    if (!tiles.count) { [self toast:@"타일 좌표를 못 읽음 — 매치 화면에서 다시"]; return; }
-    int placed = [res[@"placed"] intValue];
 
-    // Pool for set lines = ONLY board tiles + my rack tiles (exclude the stack/
-    // draw pile and other players' racks so lines never point at them).
-    NSMutableArray *pool = [NSMutableArray array];
-    for (NSDictionary *t in tiles) {
-        int loc = [t[@"loc"] intValue];
-        if (loc == 2 || (loc == 1 && [t[@"mine"] boolValue])) [pool addObject:[t mutableCopy]];
-    }
-
-    // Lines: one per recommended set, connecting the current positions of its tiles.
-    NSMutableArray *lines = [NSMutableArray array];
-    int setNo = 0;
-    for (NSString *raw in [res[@"sets"] componentsSeparatedByString:@"\n"]) {
-        NSString *s = [raw stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
-        if (!s.length) continue;
-        NSArray *parts = [s componentsSeparatedByString:@":"]; if (parts.count < 2) continue;
-        NSArray *head = [parts[0] componentsSeparatedByString:@" "];
-        NSArray *toks = [[parts[1] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]] componentsSeparatedByString:@" "];
-        NSMutableArray *pts = [NSMutableArray array];
-        UIColor *lc = [UIColor whiteColor];
-        if ([head[0] isEqualToString:@"RUN"]) {
-            int ci = rkColorIndex(head[1]); lc = rkTileColor(ci);
-            int base = -1; for (int i=0;i<(int)toks.count;i++){ if(![toks[i] isEqualToString:@"J"]){ base=[toks[i] intValue]-i; break; } }
-            for (int i=0;i<(int)toks.count;i++){ NSString*t=toks[i];
-                NSMutableDictionary *td = [t isEqualToString:@"J"] ? rkTake(pool,0,0,YES,2) : rkTake(pool,ci,(base<0?[t intValue]:base+i),NO,2);
-                if (td) [pts addObject:td[@"p"]]; }
-        } else {
-            int num = [head[1] intValue];
-            for (NSString *t in toks) { if (![t length]) continue;
-                NSMutableDictionary *td = [t isEqualToString:@"J"] ? rkTake(pool,0,0,YES,2) : rkTake(pool,rkColorIndex(t),num,NO,2);
-                if (td) [pts addObject:td[@"p"]]; }
-        }
-        if (pts.count >= 2) [lines addObject:@{ @"pts": pts, @"color": lc, @"num": @(++setNo) }];
-    }
-
-    // Highlights: the rack tiles to play (bright cyan rings). Match on a fresh pass
-    // over MINE rack tiles so highlights land on hand tiles even if used in a line.
-    NSMutableArray *hi = [NSMutableArray array];
+    // Match against a fresh pass over MY rack only, so a tile is ringed where it
+    // sits in the hand rather than wherever else that face value appears.
     NSMutableArray *rackPool = [NSMutableArray array];
     for (NSDictionary *t in tiles)
-        if ([t[@"loc"] intValue]==1 && [t[@"mine"] boolValue]) [rackPool addObject:[t mutableCopy]];
+        if ([t[@"loc"] intValue] == 1 && [t[@"mine"] boolValue])
+            [rackPool addObject:[t mutableCopy]];
+
+    NSMutableArray *hi = [NSMutableArray array];
     for (NSString *line in [res[@"place"] componentsSeparatedByString:@"\n"]) {
-        NSRange colon = [line rangeOfString:@":"]; if (colon.location==NSNotFound) continue;
+        NSRange colon = [line rangeOfString:@":"]; if (colon.location == NSNotFound) continue;
         int ci = rkColorIndex([line substringToIndex:colon.location]);
         for (NSString *tok in [[line substringFromIndex:colon.location+1] componentsSeparatedByString:@" "]) {
             if (!tok.length) continue;
@@ -1123,34 +904,38 @@ static NSMutableDictionary *rkTake(NSMutableArray *pool, int c, int n, BOOL joke
         }
     }
 
-    gDraw.lines = lines; gDraw.highlights = hi; gDraw.hidden = NO; [gDraw setNeedsDisplay];
-    [self toast:[NSString stringWithFormat:@"%d장  ·  ①②③=만들 순서, 청록테=낼 타일  (✕ 닫기)", placed]];
+    gDraw.highlights = hi; gDraw.hidden = NO; [gDraw setNeedsDisplay];
+    [self toast:hi.count ? [NSString stringWithFormat:@"낼 수 있는 타일 %lu장", (unsigned long)hi.count]
+                         : @"지금 낼 수 있는 타일 없음"];
     [gDraw.superview bringSubviewToFront:gDraw];
     [gToast.superview bringSubviewToFront:gToast];
-    [gClose.superview bringSubviewToFront:gClose];
+}
+
+// Toggle the hand overlay. While on, it re-solves twice a second so the rings
+// follow the hand and board as they change.
++ (void)toggle {
+    if (gRefreshTimer) {
+        [gRefreshTimer invalidate]; gRefreshTimer = nil;
+        gDraw.hidden = YES; gToast.hidden = YES;
+        [self styleToggle:NO];
+        return;
+    }
+    [self styleToggle:YES];
+    [self refresh];
+    gRefreshTimer = [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *t){
+        [RKOverlay refresh];
+    }];
+}
+
++ (void)styleToggle:(BOOL)on {
+    gBtn.backgroundColor = on ? [[UIColor systemBlueColor] colorWithAlphaComponent:0.95]
+                              : [[UIColor systemGreenColor] colorWithAlphaComponent:0.9];
+    [gBtn setTitle:on ? @"👁 ON" : @"👁 손패" forState:UIControlStateNormal];
 }
 // One-shot: log every board/rack tile with its grid coords. This is how we learn
 // the board coordinate convention for auto-place — read-only, on the tile-gather
 // path that SOLVE already exercises (no extra hooks; hooking the move path and
 // deep-dumping generic-heavy classes both destabilised the game when tried).
-+ (void)logGrid:(NSArray *)tiles {
-    static BOOL logged = NO;
-    if (logged || !tiles.count) return;
-    logged = YES;
-    NSMutableString *b = [NSMutableString string], *r = [NSMutableString string];
-    static const char *C[4] = { "K", "Bl", "R", "Y" };
-    for (NSDictionary *t in tiles) {
-        int loc = [t[@"loc"] intValue];
-        if (loc != 2 && !(loc == 1 && [t[@"mine"] boolValue])) continue;
-        NSString *nm = [t[@"j"] boolValue] ? @"J"
-            : [NSString stringWithFormat:@"%s%d", C[MAX(0,MIN(3,[t[@"c"] intValue]))], [t[@"n"] intValue]];
-        NSString *e = [NSString stringWithFormat:@"%@(id=%@ x=%@ y=%@) ",
-                       nm, t[@"id"], t[@"gx"], t[@"gy"]];
-        [(loc == 2 ? b : r) appendString:e];
-    }
-    LOG([NSString stringWithFormat:@"[grid] BOARD: %@", b]);
-    LOG([NSString stringWithFormat:@"[grid] RACK : %@", r]);
-}
 // Resolve the solver's textual sets into the concrete tiles that will form them,
 // reusing the same matcher the overlay used for its lines. Returns an array of
 // arrays of tile dicts (board tiles preferred, so we move as few as possible).
@@ -1210,7 +995,7 @@ static NSMutableDictionary *rkTake(NSMutableArray *pool, int c, int n, BOOL joke
     // is stale before it starts.
     if (gAutoTimer) {
         [gAutoTimer invalidate]; gAutoTimer = nil;
-        LOG(@"[auto] cancelled the run in progress; re-solving from the live board");
+
     }
     ensureHooksMainThread();
     CGFloat H = gWin.bounds.size.height;
@@ -1231,12 +1016,10 @@ static NSMutableDictionary *rkTake(NSMutableArray *pool, int c, int n, BOOL joke
             else if ([t[@"loc"] intValue] == 2)
                 [bs2 addObject:[NSString stringWithFormat:@"%@@(%@,%@)", lab, t[@"gx"], t[@"gy"]]];
         }
-        LOG([NSString stringWithFormat:@"[auto] HAND(%lu): %@", (unsigned long)hs.count, [hs componentsJoinedByString:@" "]]);
-        LOG([NSString stringWithFormat:@"[auto] BOARD(%lu): %@", (unsigned long)bs2.count, [bs2 componentsJoinedByString:@" "]]);
-        LOG([NSString stringWithFormat:@"[auto] SOLVE placed=%@  PLACE=%@", res[@"placed"],
-             [res[@"place"] stringByReplacingOccurrencesOfString:@"\n" withString:@" | "]]);
-        LOG([NSString stringWithFormat:@"[auto] SETS=%@",
-             [res[@"sets"] stringByReplacingOccurrencesOfString:@"\n" withString:@" | "]]);
+
+
+
+
     }
 
     int bx = 0, bw = 0, by = 0, bh = 0;
@@ -1368,8 +1151,7 @@ static NSMutableDictionary *rkTake(NSMutableArray *pool, int c, int n, BOOL joke
                                   @"idx": @(i), @"ids": ids }];
         }
     }
-    LOG([NSString stringWithFormat:@"[auto] board x0=%d w=%d y0=%d h=%d | plays=%lu needRearrange=%d noSlot=%d",
-         bx, bw, by, bh, (unsigned long)targets.count, noAnchor, noSlot]);
+
     // Full plan: every intended move, with its tiles and destination.
     {
         static const char *CC[4] = { "K", "Bl", "R", "Y" };
@@ -1381,8 +1163,7 @@ static NSMutableDictionary *rkTake(NSMutableArray *pool, int c, int n, BOOL joke
                 [w appendFormat:@"%@%@ ", [t[@"loc"] intValue]==1 ? @"rack:" : @"board:",
                  [t[@"j"] boolValue] ? @"JK" : [NSString stringWithFormat:@"%s%d",(c>=0&&c<4)?CC[c]:"?",n]];
             }
-            LOG([NSString stringWithFormat:@"[auto] PLAN#%lu [%@]-> (%@,%@) attach=%@",
-                 (unsigned long)i+1, w, m[@"x"], m[@"y"], m[@"attach"]]);
+
         }
     }
     if (!targets.count) { [self toast:@"배치할 세트 없음"]; return; }
@@ -1402,8 +1183,7 @@ static NSMutableDictionary *rkTake(NSMutableArray *pool, int c, int n, BOOL joke
         NSArray *live = rkGatherTiles(hh, sc);
         if (++ticks > 300 || !sq.count || !live.count || idle > 30) {
             [tm invalidate]; gAutoTimer = nil;
-            LOG([NSString stringWithFormat:@"[auto] finished moves=%d sets_left=%lu ticks=%d",
-                 done, (unsigned long)sq.count, ticks]);
+
             [RKOverlay toast:[NSString stringWithFormat:@"자동배치 종료 — %d수 (남은 세트 %lu)",
                               done, (unsigned long)sq.count]];
             return;
@@ -1432,10 +1212,9 @@ static NSMutableDictionary *rkTake(NSMutableArray *pool, int c, int n, BOOL joke
         // somebody else's block has to be pulled out, not built on.
         if (k > 0 && [occupied containsObject:[NSString stringWithFormat:@"%d,%d", x0 - 1, ay]]) k = 0;
 
-        if (k >= (int)stiles.count) {                 // fully assembled
+        if (k >= (int)stiles.count) { // fully assembled
             [sq removeObjectAtIndex:0]; idle = 0;
-            LOG([NSString stringWithFormat:@"[auto] set done (%lu tiles); sets_left=%lu",
-                 (unsigned long)stiles.count, (unsigned long)sq.count]);
+
             return;
         }
 
@@ -1464,7 +1243,7 @@ static NSMutableDictionary *rkTake(NSMutableArray *pool, int c, int n, BOOL joke
                     }
             }
             if (tx == INT_MIN) {
-                LOG(@"[auto] no isolated cell to start this set on; skipping it");
+
                 [sq removeObjectAtIndex:0]; idle++;
                 return;
             }
@@ -1493,12 +1272,11 @@ static NSMutableDictionary *rkTake(NSMutableArray *pool, int c, int n, BOOL joke
                         }
                 }
                 if (fx == INT_MIN) {
-                    LOG(@"[auto] nowhere to rebuild this set; leaving it");
+
                     [sq removeObjectAtIndex:0]; idle++;
                     return;
                 }
-                LOG([NSString stringWithFormat:@"[auto] continuation blocked at (%d,%d); restarting set at (%d,%d)",
-                     tx, ty, fx, fy]);
+
                 k = 0; next = stiles[0]; tx = fx; ty = fy;
             }
         }
@@ -1510,28 +1288,11 @@ static NSMutableDictionary *rkTake(NSMutableArray *pool, int c, int n, BOOL joke
         // the event returned without throwing, so without this there is no way to
         // tell a move the game applied elsewhere from one it ignored outright.
         NSDictionary *np = posOf[next[@"id"]];
-        LOG([NSString stringWithFormat:
-             @"[auto] tile %d/%lu id=%@ c%@-%@ loc=%@ at(%@,%@) -> (%d,%d) fired=%d sets_left=%lu",
-             k + 1, (unsigned long)stiles.count, next[@"id"], next[@"c"], next[@"n"],
-             np[@"loc"] ?: @"?", np[@"gx"] ?: @"-", np[@"gy"] ?: @"-",
-             tx, ty, fired, (unsigned long)sq.count]);
+
         rkSyncVisuals();          // model moved; drag the 3D tiles to match
         [RKOverlay toast:[NSString stringWithFormat:@"배치 중 — 세트 %lu개 남음", (unsigned long)sq.count]];
     }];
 }
-+ (void)tap {
-    LOG(@"[overlay] SOLVE tapped");
-    gClose.hidden = NO; gBtn.hidden = YES;
-    [self refresh];
-    // live update: re-solve + redraw so highlights/lines follow hand/board changes
-    [gRefreshTimer invalidate];
-    gRefreshTimer = [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *t){
-        if (gDraw.hidden) { [t invalidate]; return; }
-        [RKOverlay refresh];
-    }];
-}
-+ (void)hide { [gRefreshTimer invalidate]; gRefreshTimer = nil;
-               gDraw.hidden = YES; gToast.hidden = YES; gClose.hidden = YES; gBtn.hidden = NO; }
 + (void)ensure {
     if (gWin) return;
     NSArray *scenes = [UIApplication sharedApplication].connectedScenes.allObjects;
@@ -1544,9 +1305,7 @@ static NSMutableDictionary *rkTake(NSMutableArray *pool, int c, int n, BOOL joke
             if ([s isKindOfClass:[UIWindowScene class]]) { scene = (UIWindowScene *)s; break; }
     static int logged = 0;
     if (logged < 8) { logged++;
-        LOG([NSString stringWithFormat:@"[overlay] scenes=%lu picked=%@ state=%ld",
-             (unsigned long)scenes.count, scene ? @"yes" : @"NO",
-             scene ? (long)scene.activationState : -1]); }
+         }
     if (!scene) return;   // try again later
     RKPassWindow *win = [[RKPassWindow alloc] initWithWindowScene:scene];
     win.frame = scene.coordinateSpace.bounds;
@@ -1559,32 +1318,19 @@ static NSMutableDictionary *rkTake(NSMutableArray *pool, int c, int n, BOOL joke
     gWin = win;
     UIView *root = vc.view;
     CGRect b = win.bounds;
-    UIButton *btn = [UIButton buttonWithType:UIButtonTypeSystem];
-    btn.frame = CGRectMake(b.size.width - 92, 60, 78, 40);
-    btn.backgroundColor = [[UIColor systemGreenColor] colorWithAlphaComponent:0.9];
-    [btn setTitle:@"🧮 SOLVE" forState:UIControlStateNormal];
-    [btn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    btn.titleLabel.font = [UIFont boldSystemFontOfSize:13];
-    btn.layer.cornerRadius = 8;
-    btn.layer.zPosition = 100000;
-    [btn addTarget:self action:@selector(tap) forControlEvents:UIControlEventTouchUpInside];
-    UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(drag:)];
-    [btn addGestureRecognizer:pan];
+    // Both buttons are draggable. They sit over a live board, so wherever they
+    // default to will sometimes be exactly where a tile needs to be reached.
+    UIButton *btn = rkMakeButton(@"👁 손패", [UIColor systemGreenColor],
+                                 CGRectMake(b.size.width - 92, 60, 78, 40),
+                                 self, @selector(toggle));
     [root addSubview:btn];
     [root bringSubviewToFront:btn];
     gBtn = btn;
 
-    UIButton *ab = [UIButton buttonWithType:UIButtonTypeSystem];
-    ab.frame = CGRectMake(b.size.width - 92, 106, 78, 36);
-    ab.backgroundColor = [[UIColor systemOrangeColor] colorWithAlphaComponent:0.9];
-    [ab setTitle:@"⚙︎ AUTO" forState:UIControlStateNormal];
-    [ab setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    ab.titleLabel.font = [UIFont boldSystemFontOfSize:13];
-    ab.layer.cornerRadius = 8;
-    ab.layer.zPosition = 100000;
-    [ab addTarget:self action:@selector(autoTap) forControlEvents:UIControlEventTouchUpInside];
+    UIButton *ab = rkMakeButton(@"⚙︎ AUTO", [UIColor systemOrangeColor],
+                                CGRectMake(b.size.width - 92, 106, 78, 40),
+                                self, @selector(autoTap));
     [root addSubview:ab];
-    gAutoBtn = ab;
 
 
 
@@ -1609,19 +1355,6 @@ static NSMutableDictionary *rkTake(NSMutableArray *pool, int c, int n, BOOL joke
     [root addSubview:toast];
     gToast = toast;
 
-    // Close (✕) button top-right corner (replaces SOLVE while a result is shown).
-    UIButton *close = [UIButton buttonWithType:UIButtonTypeSystem];
-    close.frame = CGRectMake(b.size.width - 52, 44, 40, 40);
-    [close setTitle:@"✕" forState:UIControlStateNormal];
-    [close setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    close.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.6];
-    close.titleLabel.font = [UIFont boldSystemFontOfSize:22];
-    close.layer.cornerRadius = 20;
-    close.layer.zPosition = 100002;
-    close.hidden = YES;
-    [close addTarget:self action:@selector(hide) forControlEvents:UIControlEventTouchUpInside];
-    [root addSubview:close];
-    gClose = close;
     // keep the button on top even if the game adds views later
     [NSTimer scheduledTimerWithTimeInterval:1.0 repeats:YES block:^(NSTimer *tm){
         if (!btn.hidden && btn.superview) [btn.superview bringSubviewToFront:btn];
@@ -1629,12 +1362,18 @@ static NSMutableDictionary *rkTake(NSMutableArray *pool, int c, int n, BOOL joke
         // so they are in place for moves the player makes by hand too.
         ensureHooksMainThread();
     }];
-    LOG([NSString stringWithFormat:@"[overlay] attached to host window bounds=%@", NSStringFromCGRect(b)]);
+
 }
 + (void)drag:(UIPanGestureRecognizer *)g {
-    CGPoint t = [g translationInView:g.view.superview];
-    g.view.center = CGPointMake(g.view.center.x + t.x, g.view.center.y + t.y);
-    [g setTranslation:CGPointZero inView:g.view.superview];
+    UIView *host = g.view.superview;
+    CGPoint t = [g translationInView:host];
+    CGPoint c = CGPointMake(g.view.center.x + t.x, g.view.center.y + t.y);
+    // Keep it reachable: a button dragged past the edge cannot be dragged back.
+    CGFloat hw = g.view.bounds.size.width / 2, hh = g.view.bounds.size.height / 2;
+    c.x = MAX(hw, MIN(host.bounds.size.width  - hw, c.x));
+    c.y = MAX(hh, MIN(host.bounds.size.height - hh, c.y));
+    g.view.center = c;
+    [g setTranslation:CGPointZero inView:host];
 }
 @end
 
@@ -1651,13 +1390,6 @@ static void *overlayEntry(void *unused) {
 
 %ctor {
     @autoreleasepool {
-        gLog = [NSHomeDirectory() stringByAppendingPathComponent:@"Documents/rk_recon.log"];
-        gCardsLog = [NSHomeDirectory() stringByAppendingPathComponent:@"Documents/rk_cards.log"];
-        [[NSFileManager defaultManager] createDirectoryAtPath:[gLog stringByDeletingLastPathComponent]
-                                  withIntermediateDirectories:YES attributes:nil error:nil];
-        [[NSString stringWithFormat:@"[rkreader] log=%@\n", gLog]
-            writeToFile:gLog atomically:NO encoding:NSUTF8StringEncoding error:nil];
-        LOG(@"[rkreader] loaded, waiting for il2cpp…");
         %init(VCDiag);
         pthread_t th; pthread_create(&th, NULL, reconEntry, NULL); pthread_detach(th);
         pthread_t th2; pthread_create(&th2, NULL, adEntry, NULL); pthread_detach(th2);
