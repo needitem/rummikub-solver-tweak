@@ -1445,15 +1445,24 @@ static NSMutableDictionary *rkTake(NSMutableArray *pool, int c, int n, BOOL joke
             // Start on a cell with a blank either side, so the first tile does not
             // join a neighbouring block. Rows past the bottom are fair game: the
             // game grows the board when a tile lands there.
-            for (int r = 0; r < bh + 8 && tx == INT_MIN; r++)
-                for (int c = 0; c < bw; c++) {
-                    NSString *me = [NSString stringWithFormat:@"%d,%d", bx + c, by + r];
-                    NSString *lf = [NSString stringWithFormat:@"%d,%d", bx + c - 1, by + r];
-                    NSString *rt = [NSString stringWithFormat:@"%d,%d", bx + c + 1, by + r];
-                    if ([occupied containsObject:me] || [occupied containsObject:lf] ||
-                        [occupied containsObject:rt]) continue;
-                    tx = bx + c; ty = by + r; break;
-                }
+            // Prefer somewhere the whole set fits: starting in a one-cell gap only
+            // to run into the next block a tile later is what left the last set
+            // cycling forever. Rows past the bottom are fair game — the game grows
+            // the board when a tile lands there — so a full-width gap always exists.
+            int want = (int)stiles.count;
+            for (int pass = 0; pass < 2 && tx == INT_MIN; pass++) {
+                int need = pass == 0 ? want : 1;
+                for (int r = 0; r < bh + 8 && tx == INT_MIN; r++)
+                    for (int c = 0; c < bw; c++) {
+                        BOOL room = ![occupied containsObject:
+                            [NSString stringWithFormat:@"%d,%d", bx + c - 1, by + r]];
+                        for (int q = 0; q <= need && room; q++)
+                            if ([occupied containsObject:
+                                 [NSString stringWithFormat:@"%d,%d", bx + c + q, by + r]]) room = NO;
+                        if (!room) continue;
+                        tx = bx + c; ty = by + r; break;
+                    }
+            }
             if (tx == INT_MIN) {
                 LOG(@"[auto] no isolated cell to start this set on; skipping it");
                 [sq removeObjectAtIndex:0]; idle++;
@@ -1462,13 +1471,35 @@ static NSMutableDictionary *rkTake(NSMutableArray *pool, int c, int n, BOOL joke
         } else {
             tx = ax + 1; ty = ay;
             if ([occupied containsObject:[NSString stringWithFormat:@"%d,%d", tx, ty]]) {
-                // The row continues into someone else's tiles. Rebuild this set from
-                // scratch somewhere clear instead of forcing the cell.
-                LOG(@"[auto] continuation occupied; rebuilding this set elsewhere");
-                NSMutableArray *rest = [sq mutableCopy];
-                [rest removeObjectAtIndex:0]; [rest addObject:cur];
-                sq = rest; idle++;
-                return;
+                // The row runs into somebody else's tiles. Rotating the queue only
+                // helped while other sets were still moving; with one set left it
+                // span forever. Actually restart the set: drag its first tile to a
+                // clean spot and let the chain rebuild from there.
+                int fx = INT_MIN, fy = 0;
+                int want = (int)stiles.count;
+                for (int pass = 0; pass < 2 && fx == INT_MIN; pass++) {
+                    int need = pass == 0 ? want : 1;
+                    for (int r = 0; r < bh + 8 && fx == INT_MIN; r++)
+                        for (int c = 0; c < bw; c++) {
+                            BOOL room = ![occupied containsObject:
+                                [NSString stringWithFormat:@"%d,%d", bx + c - 1, by + r]];
+                            for (int q = 0; q <= need && room; q++)
+                                if ([occupied containsObject:
+                                     [NSString stringWithFormat:@"%d,%d", bx + c + q, by + r]]) room = NO;
+                            if (!room) continue;
+                            // do not "restart" onto the stretch it already occupies
+                            if (by + r == ay && bx + c >= x0 - 1 && bx + c <= ax + 1) continue;
+                            fx = bx + c; fy = by + r; break;
+                        }
+                }
+                if (fx == INT_MIN) {
+                    LOG(@"[auto] nowhere to rebuild this set; leaving it");
+                    [sq removeObjectAtIndex:0]; idle++;
+                    return;
+                }
+                LOG([NSString stringWithFormat:@"[auto] continuation blocked at (%d,%d); restarting set at (%d,%d)",
+                     tx, ty, fx, fy]);
+                k = 0; next = stiles[0]; tx = fx; ty = fy;
             }
         }
 
