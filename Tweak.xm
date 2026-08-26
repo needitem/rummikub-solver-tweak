@@ -1415,12 +1415,23 @@ static UIButton *rkMakeButton(NSString *title, UIColor *tint, CGRect frame,
             return i - st + 1;
         };
 
+        NSMutableDictionary *rowPop = [NSMutableDictionary dictionary];
+        for (NSDictionary *t in live)
+            if ([t[@"loc"] intValue] == 2)
+                rowPop[t[@"gy"]] = @([rowPop[t[@"gy"]] intValue] + 1);
+
         // Finding a clean strip: a run of `need` free cells with a blank on the
         // left, so the first tile cannot merge into a foreign block.
         int (^freeStrip)(int, int *, int *) = ^int(int need, int *ox, int *oy) {
+            // An untouched row first: a set seeded there cannot be shoved about.
+            // As other sets take tiles out of a busy row the game compacts it, a
+            // lone anchor slides left every tick and the tile trying to join never
+            // catches up.
+            for (int r = 0; r <= bh; r++)
+                if (![rowPop objectForKey:@(by + r)]) { *ox = bx; *oy = by + r; return 1; }
             for (int pass = 0; pass < 2; pass++) {
                 int want = pass == 0 ? need : 1;
-                for (int r = 0; r < bh + 8; r++)
+                for (int r = 0; r <= bh; r++)
                     for (int c = 0; c < bw; c++) {
                         if ([occupied containsObject:
                              [NSString stringWithFormat:@"%d,%d", bx + c - 1, by + r]]) continue;
@@ -1451,26 +1462,53 @@ static UIButton *rkMakeButton(NSString *title, UIColor *tint, CGRect frame,
             }
         }
 
-        // Send the WHOLE set in one move.
+        // Move only what a player could actually pick up: one tile, or tiles that
+        // are already side by side. Handing the game a set scattered across the
+        // board and the rack in a single move works, but it is not a gesture a
+        // human can make.
         //
-        // Building a set tile by tile cannot work: the game keeps distinct blocks
-        // separated by a blank and compacts the row after each move, so a tile
-        // dropped next to a partial set is pushed away again. Logged as a chase —
-        // core at 104, place Bl5 at 105; core slides to 103, place Bl5 at 104;
-        // core 102, Bl5 103 ... until it ran off the board. Handing the game every
-        // card of the set at once makes it lay them down as one set, and it is the
-        // fewest moves possible: one per set.
-        NSArray *moveTiles = stiles;
-        int tx = INT_MIN, ty = 0;
-        {
+        // Assembly is therefore: put the biggest grabbable piece down in an empty
+        // row, then bring the other pieces onto its edge naming the card to attach
+        // to. Attaching is what actually merges them — dropping a loose tile
+        // *beside* a block just gets it pushed away again.
+        NSArray *moveTiles = nil;
+        int tx = INT_MIN, ty = 0, attach = -1;
+        // Relocating a lone anchor out of a busy row helps only once. When no
+        // empty row exists freeStrip hands back a slot in a busy row, and then the
+        // tile just placed is immediately "a lone anchor in a busy row" again —
+        // the condition re-triggers on its own result and the set never grows
+        // (logged: K3 cycling 105 -> 107 -> 109 -> 105 forever).
+        BOOL loneInCrowd = (coreLen == 1 && [rowPop[@(coreRow)] intValue] > 1 &&
+                            ![cur[@"reseeded"] boolValue]);
+
+        if (coreLen >= 1 && !loneInCrowd) {
+            int m = coreI + coreLen;
+            if (m < n) {                                  // grow to the right
+                int L = MAX(1, runFrom(m));
+                moveTiles = [stiles subarrayWithRange:NSMakeRange(m, L)];
+                tx = coreR + 1; ty = coreRow;
+                attach = [((NSDictionary *)stiles[m - 1])[@"id"] intValue];
+            } else {                                      // grow to the left
+                int L = MAX(1, runEndingAt(coreI - 1));
+                if (coreL - L < bx) L = 1;
+                moveTiles = [stiles subarrayWithRange:NSMakeRange(coreI - L, L)];
+                tx = coreL - L; ty = coreRow;
+                attach = [((NSDictionary *)stiles[coreI])[@"id"] intValue];
+            }
+        } else {
+            // Seed the set: the largest run it already has, moved somewhere stable.
+            int bestI = 0, bestL = 0;
+            for (int i = 0; i < n; i++) {
+                int L = runFrom(i);
+                if (L > bestL) { bestL = L; bestI = i; }
+            }
+            if (bestL < 1) { bestL = 1; bestI = 0; }
             int fx, fy;
             if (!freeStrip(n, &fx, &fy)) { [sq removeObjectAtIndex:0]; idle++; continue; }
-            // Already sitting on that strip? Then the only thing wrong was a
-            // neighbour touching an end, which the defer path above handles.
-            if (coreLen == n && coreRow == fy && coreL == fx) {
-                [sq removeObjectAtIndex:0]; idle++; continue;
-            }
-            tx = fx; ty = fy;
+            moveTiles = [stiles subarrayWithRange:NSMakeRange(bestI, bestL)];
+            // leave a cell for whatever belongs before this piece
+            tx = fx + (bestI > 0 ? 1 : 0); ty = fy;
+            if (coreLen >= 1) cur[@"reseeded"] = @YES;   // one relocation per set
         }
 
         {
@@ -1482,10 +1520,10 @@ static UIButton *rkMakeButton(NSString *title, UIColor *tint, CGRect frame,
                 [w appendFormat:@"%s%@@%@(%@,%@) ", (c>=0&&c<4)?CC[c]:"?", t[@"n"],
                  pp[@"loc"], pp[@"gx"], pp[@"gy"]];
             }
-            RKLOG(@"[exec] core=[i=%d len=%d row=%d x=%d..%d] n=%d move[%@] -> (%d,%d)",
-                  coreI, coreLen, coreRow, coreL, coreR, n, w, tx, ty);
+            RKLOG(@"[exec] core=[i=%d len=%d row=%d x=%d..%d] n=%d move[%@] -> (%d,%d) attach=%d",
+                  coreI, coreLen, coreRow, coreL, coreR, n, w, tx, ty, attach);
         }
-        void *md = rkBuildMove(moveTiles, tx, ty, -1);
+        void *md = rkBuildMove(moveTiles, tx, ty, attach);
         BOOL fired = md ? rkApplyMove(md) : NO;
         if (fired) { done++; idle = 0; } else idle++;
         rkSyncVisuals();          // model moved; drag the 3D tiles to match
