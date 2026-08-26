@@ -509,26 +509,6 @@ static void RKLOG(NSString *fmt, ...) {
 
 static BOOL rkApplyMove(void *md);      // defined below
 
-// Ask the game to sort my rack. RmkbMoveDetails is part of the move payload
-// (MoveTiles=0, ArrangeByColor=1, ArrangeByValue=2), so a sort is one move —
-// and the game lays sequences out with a blank after each
-// (addSpaceAfterSequences), which is exactly the shape a block lift wants.
-// Sorting first turns "three separate tiles" into "one run already side by
-// side", so a set that cost three moves to place now costs one.
-static BOOL rkArrangeRack(int mode) {
-    if (!f_object_new || !f_class_from_name || !f_class_get_method_from_name) return NO;
-    void *cls = f_class_from_name(gAsmImg, "", "RmkbMovesData");
-    if (!cls) return NO;
-    void *md = f_object_new(cls);
-    if (!md) return NO;
-    void *ctor = f_class_get_method_from_name(cls, ".ctor", 0);
-    if (ctor) { void *exc = NULL; f_runtime_invoke(ctor, md, NULL, &exc); if (exc) return NO; }
-    *(int*)((char*)md + 0x18) = mode;      // MoveDetails: 1 = by colour, 2 = by value
-    *(int*)((char*)md + 0x1c) = 1;         // TargetLocation = Player (the rack)
-    *(int*)((char*)md + 0x28) = -1;        // PreferredCardToAttatchTo: none
-    return rkApplyMove(md);
-}
-
 static void *rkBuildMove(NSArray *tilesOfSet, int targetX, int targetY, int attachTo) {
     if (!tilesOfSet.count) return NULL;
     if (!f_object_new || !f_object_get_class || !f_class_from_name ||
@@ -870,6 +850,7 @@ static UILabel *gToast = nil;
 static UIButton *gBtn = nil;
 static NSTimer *gRefreshTimer = nil;
 static UIButton *gAutoBtn = nil;
+static UIButton *gRobotBtn = nil;
 static NSTimer *gAutoTimer = nil;   // paces auto-place: one move per tick
 
 // Seconds per placed tile — hold the AUTO button to change it.
@@ -882,6 +863,12 @@ static NSTimer *gAutoTimer = nil;   // paces auto-place: one move per tick
 static const NSTimeInterval kAutoPoll = 0.05;
 static const NSTimeInterval kAutoTickMin = 0.1, kAutoTickMax = 1.0;
 static NSString * const kAutoTickKey = @"RKAutoTick";
+// Robot mode: hand the game a whole set in one move. Fewer moves and it always
+// finishes, but no player could make that gesture — every other tile of the set
+// is picked out of the board and the rack at once. Off by default; the human-like
+// assembly is the normal behaviour.
+static BOOL gRobotMode = NO;
+static NSString * const kRobotKey = @"rk_robot";
 static NSTimeInterval gAutoTick = 0.6;
 static UIView *gSpeedPanel = nil;
 static UILabel *gSpeedLabel = nil;
@@ -889,6 +876,7 @@ static UILabel *gSpeedLabel = nil;
 static void rkLoadAutoTick(void) {
     double v = [[NSUserDefaults standardUserDefaults] doubleForKey:kAutoTickKey];
     if (v >= kAutoTickMin && v <= kAutoTickMax) gAutoTick = v;
+    gRobotMode = [[NSUserDefaults standardUserDefaults] boolForKey:kRobotKey];
 }
 
 // tile colour index -> UIColor / dark-text flag
@@ -1004,7 +992,7 @@ static UIButton *rkMakeButton(NSString *title, UIColor *tint, CGRect frame,
     if (gSpeedPanel) { [self hideSpeedPanel]; return; }
 
     UIView *root = gWin.rootViewController.view;
-    CGFloat w = 232, h = 92;
+    CGFloat w = 232, h = 124;
     CGRect b = root.bounds;
     CGFloat x = MIN(MAX(12, gAutoBtn.center.x - w / 2), b.size.width - w - 12);
     CGFloat y = MIN(gAutoBtn.frame.origin.y + gAutoBtn.frame.size.height + 8,
@@ -1028,8 +1016,20 @@ static UIButton *rkMakeButton(NSString *title, UIColor *tint, CGRect frame,
         forControlEvents:UIControlEventValueChanged];
     [p addSubview:s];
 
+    gRobotBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+    gRobotBtn.frame = CGRectMake(12, 62, w - 24, 26);
+    gRobotBtn.titleLabel.font = [UIFont boldSystemFontOfSize:13];
+    gRobotBtn.backgroundColor = [[UIColor whiteColor] colorWithAlphaComponent:0.18];
+    gRobotBtn.layer.cornerRadius = 6;
+    gRobotBtn.contentHorizontalAlignment = UIControlContentHorizontalAlignmentLeft;
+    gRobotBtn.contentEdgeInsets = UIEdgeInsetsMake(0, 8, 0, 0);
+    [gRobotBtn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    [gRobotBtn addTarget:self action:@selector(toggleRobot)
+        forControlEvents:UIControlEventTouchUpInside];
+    [p addSubview:gRobotBtn];
+
     UIButton *close = [UIButton buttonWithType:UIButtonTypeSystem];
-    close.frame = CGRectMake(w - 74, 60, 62, 26);
+    close.frame = CGRectMake(w - 74, 92, 62, 26);
     [close setTitle:@"닫기" forState:UIControlStateNormal];
     [close setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
     close.titleLabel.font = [UIFont boldSystemFontOfSize:13];
@@ -1050,8 +1050,16 @@ static UIButton *rkMakeButton(NSString *title, UIColor *tint, CGRect frame,
     [self syncSpeedLabel];
 }
 
++ (void)toggleRobot {
+    gRobotMode = !gRobotMode;
+    [[NSUserDefaults standardUserDefaults] setBool:gRobotMode forKey:kRobotKey];
+    [self syncSpeedLabel];
+}
+
 + (void)syncSpeedLabel {
     gSpeedLabel.text = [NSString stringWithFormat:@"타일당 %.2f초", gAutoTick];
+    [gRobotBtn setTitle:gRobotMode ? @"☑ 로봇 (세트 통째로)" : @"☐ 로봇 (세트 통째로)"
+               forState:UIControlStateNormal];
 }
 
 + (void)hideSpeedPanel {
@@ -1135,17 +1143,9 @@ static UIButton *rkMakeButton(NSString *title, UIColor *tint, CGRect frame,
     // Sort the rack before planning so tiles of the same run end up adjacent and
     // can be lifted as one block. Re-read the board afterwards, since the plan
     // has to describe where the tiles are *now*.
-    static BOOL sortedThisRun = NO;
-    if (!sortedThisRun) {
-        sortedThisRun = YES;
-        if (rkArrangeRack(1)) {                    // 1 = ArrangeByColor
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)),
-                           dispatch_get_main_queue(), ^{ [RKOverlay autoTap]; });
-            [self toast:@"핸드 정렬 중…"];
-            return;
-        }
-    }
-    sortedThisRun = NO;
+    // No rack sort. Sorting by colour only makes a set's tiles adjacent when the
+    // set is a run; groups stay scattered, so it bought a block grab only
+    // occasionally while always costing a move and a wait.
     CGFloat H = gWin.bounds.size.height;
     CGFloat scale = gWin.screen.scale ?: [UIScreen mainScreen].scale;
     NSArray *tiles = rkGatherTiles(H, scale);
@@ -1427,8 +1427,15 @@ static UIButton *rkMakeButton(NSString *title, UIColor *tint, CGRect frame,
             // As other sets take tiles out of a busy row the game compacts it, a
             // lone anchor slides left every tick and the tile trying to join never
             // catches up.
+            // Put a new set next to the board's existing content rather than in
+            // the far corner. Flinging a tile from (109,101) to (92,107) is what
+            // makes the run look like it is thrashing about.
+            int leftmost = INT_MAX;
+            for (NSDictionary *t in live)
+                if ([t[@"loc"] intValue] == 2) leftmost = MIN(leftmost, [t[@"gx"] intValue]);
+            if (leftmost == INT_MAX) leftmost = bx;
             for (int r = 0; r <= bh; r++)
-                if (![rowPop objectForKey:@(by + r)]) { *ox = bx; *oy = by + r; return 1; }
+                if (![rowPop objectForKey:@(by + r)]) { *ox = leftmost; *oy = by + r; return 1; }
             for (int pass = 0; pass < 2; pass++) {
                 int want = pass == 0 ? need : 1;
                 for (int r = 0; r <= bh; r++)
@@ -1473,6 +1480,20 @@ static UIButton *rkMakeButton(NSString *title, UIColor *tint, CGRect frame,
         // *beside* a block just gets it pushed away again.
         NSArray *moveTiles = nil;
         int tx = INT_MIN, ty = 0, attach = -1;
+
+        if (gRobotMode) {
+            // Whole set in one move. The game lays the tiles down as a set, so
+            // there is no anchor to slide and nothing to chase — it just is not a
+            // gesture a player could make, picking tiles out of the board and the
+            // rack simultaneously.
+            int fx, fy;
+            if (!freeStrip(n, &fx, &fy)) { [sq removeObjectAtIndex:0]; idle++; continue; }
+            if (coreLen == n && coreRow == fy && coreL == fx) {
+                [sq removeObjectAtIndex:0]; idle++; continue;
+            }
+            moveTiles = stiles; tx = fx; ty = fy; attach = -1;
+        } else {
+
         // Relocating a lone anchor out of a busy row helps only once. When no
         // empty row exists freeStrip hands back a slot in a busy row, and then the
         // tile just placed is immediately "a lone anchor in a busy row" again —
@@ -1505,9 +1526,15 @@ static UIButton *rkMakeButton(NSString *title, UIColor *tint, CGRect frame,
                 attach = [((NSDictionary *)stiles[m - 1])[@"id"] intValue];
             } else {                                      // grow to the left
                 int L = MAX(1, runEndingAt(coreI - 1));
-                if (coreL - L < bx) L = 1;
                 moveTiles = [stiles subarrayWithRange:NSMakeRange(coreI - L, L)];
-                tx = coreL - L; ty = coreRow;
+                // Insert AT the core's first cell, not L cells to its left. A drop
+                // shoves everything from that cell rightwards to make room, so
+                // aiming left of the core pushed the core away by exactly the
+                // number of tiles inserted and left that many blank cells in
+                // between — the tiles then chased the core across the row
+                // (R7/R8 following a core from 103 to 105 to 107 to 109). Landing
+                // on the core's own cell puts them immediately to its left.
+                tx = coreL; ty = coreRow;
                 attach = [((NSDictionary *)stiles[coreI])[@"id"] intValue];
             }
         } else {
@@ -1524,6 +1551,8 @@ static UIButton *rkMakeButton(NSString *title, UIColor *tint, CGRect frame,
             // leave a cell for whatever belongs before this piece
             tx = fx + (bestI > 0 ? 1 : 0); ty = fy;
             if (coreLen >= 1) cur[@"reseeded"] = @YES;   // one relocation per set
+        }
+
         }
 
         {
