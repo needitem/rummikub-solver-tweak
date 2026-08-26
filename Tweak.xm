@@ -1488,16 +1488,18 @@ static UIButton *rkMakeButton(NSString *title, UIColor *tint, CGRect frame,
         NSArray *moveTiles = nil;
         int tx = INT_MIN, ty = 0, attach = -1;
 
-        if (gRobotMode) {
-            // Whole set in one move. The game lays the tiles down as a set, so
-            // there is no anchor to slide and nothing to chase — it just is not a
-            // gesture a player could make, picking tiles out of the board and the
-            // rack simultaneously.
+        if (gRobotMode && coreLen == 0) {
+            // Robot mode lays a whole set down in one move — but only a set that has
+            // no tiles on the board yet. The game accepts the tiles as a set, so
+            // there is no anchor to slide and nothing to chase; it just is not a
+            // gesture a player could make, picking tiles out of the rack all at once.
+            //
+            // Once part of the set is already on the board, fall through to the
+            // human path instead: reuse what is placed (the core) and grow it,
+            // rather than tearing the set down and re-laying it in free space — which
+            // on a tight board could not find room and dropped the set outright.
             int fx, fy;
             if (!freeStrip(n, &fx, &fy)) { [sq removeObjectAtIndex:0]; idle++; continue; }
-            if (coreLen == n && coreRow == fy && coreL == fx) {
-                [sq removeObjectAtIndex:0]; idle++; continue;
-            }
             moveTiles = stiles; tx = fx; ty = fy; attach = -1;
         } else {
 
