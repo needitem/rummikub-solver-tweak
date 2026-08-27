@@ -14,6 +14,51 @@
 #import <mach-o/dyld.h>
 #import "rksolver.h"   // rk_solve(): Den Hertog-Hulshof DP, validated vs oracle
 
+// ---- Standalone (non-jailbroken) shims ----
+// Injected into a re-signed IPA there is no ElleKit, so the one Substrate entry
+// point this tweak still needs has to come from somewhere else: MSHookMessageEx,
+// what logos %hook compiles down to. Hooking an ObjC method is something the ObjC
+// runtime does natively, so we implement it here — and with that the dylib carries
+// no undefined Substrate symbol, which would otherwise make dyld refuse to load it.
+//
+// Nothing needs MSHookFunction (inline native hooking) any more; see
+// installCaptureHook for why the native hooks were dropped on both builds.
+#if RK_STANDALONE
+#import <objc/runtime.h>
+
+// Leaves a trail in the app's own Documents so a launch failure can be diagnosed
+// on a device with no SSH — the container is readable over devicectl.
+static void rkBoot(const char *stage) {
+    @autoreleasepool {
+        NSString *p = [[NSHomeDirectory() stringByAppendingPathComponent:@"Documents"]
+                        stringByAppendingPathComponent:@"rk_boot.log"];
+        NSString *line = [NSString stringWithFormat:@"%.3f %s\n",
+                          [NSDate date].timeIntervalSince1970, stage];
+        NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:p];
+        if (!fh) { [line writeToFile:p atomically:NO encoding:NSUTF8StringEncoding error:nil]; return; }
+        @try { [fh seekToEndOfFile]; [fh writeData:[line dataUsingEncoding:NSUTF8StringEncoding]]; }
+        @finally { [fh closeFile]; }
+    }
+}
+
+extern "C" void MSHookMessageEx(Class cls, SEL sel, IMP hook, IMP *old) {
+    if (old) *old = NULL;
+    if (!cls || !sel) return;
+    Method m = class_getInstanceMethod(cls, sel);
+    if (!m) return;
+    // A class that merely inherits the method gets its own implementation, and
+    // %orig then falls through to the inherited one; otherwise swap in place.
+    if (class_addMethod(cls, sel, hook, method_getTypeEncoding(m))) {
+        if (old) *old = method_getImplementation(m);
+    } else {
+        IMP prev = method_setImplementation(m, hook);
+        if (old) *old = prev;
+    }
+}
+#else
+#define rkBoot(x) ((void)0)
+#endif
+
 // ---- AppLovin MAX ad classes (minimal decls for hooking) ----
 @interface MAInterstitialAd : NSObject @end
 @interface MAAppOpenAd : NSObject @end
@@ -48,7 +93,6 @@ typedef void*        (*t_class_get_method_from_name)(void*, const char*, int);
 typedef size_t       (*t_array_length)(void*);
 typedef uint16_t*    (*t_string_chars)(void*);
 typedef int          (*t_string_length)(void*);
-typedef void         (*t_MSHookFunction)(void*, void*, void**);
 typedef void*        (*t_runtime_invoke)(const void*, void*, void**, void**);
 typedef void*        (*t_class_get_type)(void*);
 typedef void*        (*t_type_get_object)(void*);
@@ -83,7 +127,6 @@ static t_class_get_method_from_name f_class_get_method_from_name;
 static t_array_length           f_array_length;
 static t_string_chars           f_string_chars;
 static t_string_length          f_string_length;
-static t_MSHookFunction         f_MSHookFunction;
 static t_runtime_invoke         f_runtime_invoke;
 static t_class_get_type         f_class_get_type;
 static t_type_get_object        f_type_get_object;
@@ -128,7 +171,6 @@ static BOOL resolveAPI(void) {
     SYM(f_array_length, "il2cpp_array_length");
     SYM(f_string_chars, "il2cpp_string_chars");
     SYM(f_string_length, "il2cpp_string_length");
-    f_MSHookFunction = (t_MSHookFunction)dlsym(RTLD_DEFAULT, "MSHookFunction");
     SYM(f_runtime_invoke, "il2cpp_runtime_invoke");
     SYM(f_class_get_type, "il2cpp_class_get_type");
     SYM(f_type_get_object, "il2cpp_type_get_object");
@@ -204,26 +246,11 @@ static void tryGrabUnityHandle(void) {
 // Card:  0x10 OwnerPlayerID:String  0x1c Location:enum(0 Stack,1 Player,2 Board)  0x38 Value:CardValue*
 // CardValue: 0x10 Color:int  0x14 NumericValue:int  0x18 IsJoker:bool
 
-static void *gGameData = NULL;                    // captured live RmkbGameData*
-
-// Hook on RmkbGameData::SetRackPositionsFromLocalData(self, other, str, method)
-// to capture a live RmkbGameData instance pointer (`self`).
-static bool (*orig_setrack)(void*, void*, void*, void*);
-static bool hook_setrack(void *self, void *other, void *str, void *method) {
-    gGameData = self;
-    return orig_setrack(self, other, str, method);
-}
-// RmkbGameDataManipulator::CreateGrid(RmkbGameData) runs on match entry / board
-// render, so this captures the live instance WITHOUT needing a tile move.
-static void *gView = NULL;                   // live RmkbGameView3D (fires move events)
-static void *gManip = NULL;                  // live RmkbGameDataManipulator (move applier)
-
-static bool (*orig_creategrid)(void*, void*, void*);
-static bool hook_creategrid(void *selfManip, void *gameData, void *method) {
-    if (gameData) gGameData = gameData;
-    if (selfManip) gManip = selfManip;       // needed to apply our own moves
-    return orig_creategrid(selfManip, gameData, method);
-}
+// The live RmkbGameView3D. Found with Unity's own FindObjectsOfTypeAll (see
+// rkFindObject / rkGatherTiles) rather than captured by a hook, and it carries
+// everything that used to be read out of RmkbGameData: the board rectangle, the
+// tile containers, and the move event we fire.
+static void *gView = NULL;
 
 // Capture the RmkbMovesData of every move the game validates, so a manual drag
 // shows the exact payload a legal board->board rearrangement carries (tagged MAN)
@@ -244,39 +271,23 @@ static NSString *decodeString(void *s) {
     return [NSString stringWithCharacters:c length:(NSUInteger)len];
 }
 
+// No native hooks are installed any more, on either build.
+//
+// They existed to capture RmkbGameData (for the board rectangle) and the
+// manipulator; the manipulator was never actually used, and the board rectangle is
+// now read from RmkbGameView3D, which a plain runtime call can reach. Removing them
+// is a straight win:
+//   * a match joined in progress never fired the hook, so the board rectangle was
+//     unavailable and AUTO refused to run — the view is always populated;
+//   * inline hooking is impossible in a re-signed app on stock iOS. Dobby installs
+//     the patch happily, but its trampoline lives in memory the kernel will not make
+//     executable without the dynamic-codesigning entitlement, so the game died the
+//     instant it called a hooked method — the same "trampoline page in no image"
+//     SIGBUS this file already recorded for FireMoveMadeEvent on a jailbreak.
+// One code path now serves both builds.
 static void installCaptureHook(const void *img) {
-    static BOOL installed = NO;
-    if (installed) return;
-    if (!f_MSHookFunction || !f_class_from_name || !f_class_get_method_from_name) {
-         return;
-    }
-    void *k = f_class_from_name(img, "", "RmkbGameData");
-    if (!k) { return; }
-    void *m = f_class_get_method_from_name(k, "SetRackPositionsFromLocalData", 2);
-    if (!m) { return; }
-    void *fp = *(void**)m;                     // MethodInfo.methodPointer (offset 0)
-    if (fp) { f_MSHookFunction(fp, (void*)hook_setrack, (void**)&orig_setrack);
-               }
-    // Also hook CreateGrid on the manipulator for capture without a tile move.
-    void *mk = f_class_from_name(img, "", "RmkbGameDataManipulator");
-    if (mk) {
-        // Do NOT hook the move path to observe payloads. Three attempts each
-        // crashed the game on a real drag: ValidateAndApplyMove returns a
-        // value type (indirect x8 return, corrupted by a pointer-returning
-        // hook), and FireMoveMadeEvent/PrepareTileObjects were read at fixed
-        // offsets that do not hold for every payload the game passes. The move
-        // pipeline has to be understood from a static decompile first.
-        void *m2 = f_class_get_method_from_name(mk, "CreateGrid", 1);
-        if (m2) { void *fp2 = *(void**)m2;
-                  if (fp2) { f_MSHookFunction(fp2, (void*)hook_creategrid, (void**)&orig_creategrid);
-                              } }
-    }
-    // Do NOT hook FireMoveMadeEvent: being void/one-arg is not enough. When the
-    // game calls it at the end of a real drag, control lands on the trampoline
-    // page and dies (SIGBUS / KERN_PROTECTION_FAILURE executing at an address in
-    // no image, Unity Main Thread). Calling it ourselves is fine — it is only
-    // hooking it that breaks.
-    installed = YES;
+    (void)img;
+    rkBoot("native-hooks-not-used");
 }
 
 static const void *assemblyCSharpImage(void *domain) {
@@ -459,7 +470,9 @@ static void ensureHooksMainThread(void) {
     static BOOL tried = NO;
     if (tried || !ensureImages()) return;
     tried = YES;
+    rkBoot("images-resolved");
     installCaptureHook(gAsmImg);
+    rkBoot("capture-hooks-done");
 }
 
 // ---- move application ----
@@ -593,11 +606,12 @@ static void rkSyncVisuals(void) {
     void *mSetPos = trC ? f_class_get_method_from_name(trC, "set_position", 1) : NULL;
     if (!mWorld || !mGetPos || !mSetPos) { return; }
 
-    int bOrgX = 100, bOrgY = 100;                         // board origin (RmkbGameData)
-    if (gGameData) {
-        bOrgX = *(int*)((char*)gGameData + 0x90);
-        bOrgY = *(int*)((char*)gGameData + 0x98);
-    }
+    // Board origin, from the view's own _boardGridXOffset/_boardGridYOffset (the
+    // same pair rkBoardBounds reads). 100,100 is the observed default and only a
+    // guard for a view that has not laid the board out yet.
+    int bOrgX = *(int*)((char*)gView + 0x18c);
+    int bOrgY = *(int*)((char*)gView + 0x190);
+    if (bOrgX <= 0 || bOrgY <= 0) { bOrgX = 100; bOrgY = 100; }
     void *arr = *(void**)((char*)gView + 0x140);          // Tiles : TileContainer[]
     size_t cnt = (arr && f_array_length) ? f_array_length(arr) : 0;
     if (!cnt) { return; }
@@ -682,24 +696,34 @@ static void *rkFindObject(const void *img, const char *ns, const char *name) {
 // the manipulator's own grid fields (0x60 _gridWidth, 0x64 _gridHeight,
 // 0x68 _boardStartX, 0x6c _boardStartY), and fall back to the extents of the
 // tiles we can already see.
+// The playable rectangle, read straight off RmkbGameView3D. Offsets came from
+// enumerating the view class at runtime:
+//   _boardGridWidth @0x184   _boardGridHeight  @0x188
+//   _boardGridXOffset @0x18c _boardGridYOffset @0x190
+//
+// This replaces reading RmkbGameData, which only ever arrived through an inline
+// hook on SetRackPositionsFromLocalData. The view is better on both counts: it is
+// reachable with a plain runtime call (FindObjectsOfTypeAll), so nothing has to be
+// code-patched — and it is populated even when joining a match already in progress,
+// which used to leave gGameData null and make AUTO refuse to run.
+//
+// Verified on device: the view reported origin (100,100) size 12x4 while the board
+// tiles sat at x=101..105, y=101..102 — the same 100-based space, and the 12x4 the
+// board is known to start at.
+//
+// Do NOT use the manipulator's _grid instead — that is a 200x200 backing store, and
+// trusting it put test tiles at x=115, off to the side of the real board. There is
+// no tile-extent fallback either: stray tiles outside the play area dragged the
+// inferred origin to x=99 and every queued target landed off-board, so the game
+// refused the lot. Better to refuse to run than to aim at nothing.
 static BOOL rkBoardBounds(NSArray *tiles, int *x0, int *w, int *y0, int *h) {
-    // RmkbGameData's BoardSize* is the authoritative *playable* rectangle.
-    // Do NOT use the manipulator's _grid — that is a 200x200 backing store, and
-    // trusting it put test tiles at x=115, off to the side of the real board.
-    if (gGameData) {
-        int sx = *(int*)((char*)gGameData + 0x90), gw = *(int*)((char*)gGameData + 0x94);
-        int sy = *(int*)((char*)gGameData + 0x98), gh = *(int*)((char*)gGameData + 0x9c);
-        if (gw > 0 && gh > 0 && gw < 64 && gh < 64) {
-            *x0 = sx; *w = gw; *y0 = sy; *h = gh;
-
-            return YES;
-        }
-    }
-    // No tile-extent fallback: stray tiles outside the play area dragged the
-    // inferred origin to x=99 and every queued target landed off-board, so the
-    // game refused the lot. Better to refuse to run than to aim at nothing.
-
-    return NO;
+    (void)tiles;
+    if (!gView) return NO;
+    int gw = *(int*)((char*)gView + 0x184), gh = *(int*)((char*)gView + 0x188);
+    int sx = *(int*)((char*)gView + 0x18c), sy = *(int*)((char*)gView + 0x190);
+    if (gw <= 0 || gh <= 0 || gw >= 64 || gh >= 64) return NO;
+    *x0 = sx; *w = gw; *y0 = sy; *h = gh;
+    return YES;
 }
 
 static NSArray<NSDictionary*> *rkGatherTiles(CGFloat winHpoints, CGFloat scale) {
@@ -1600,6 +1624,7 @@ static UIButton *rkMakeButton(NSString *title, UIColor *tint, CGRect frame,
     if (logged < 8) { logged++;
          }
     if (!scene) return;   // try again later
+    rkBoot("overlay-making-window");
     RKPassWindow *win = [[RKPassWindow alloc] initWithWindowScene:scene];
     win.frame = scene.coordinateSpace.bounds;
     win.windowLevel = (UIWindowLevel)1000000;   // above Unity's window
@@ -1655,6 +1680,7 @@ static UIButton *rkMakeButton(NSString *title, UIColor *tint, CGRect frame,
     [root addSubview:toast];
     gToast = toast;
 
+    rkBoot("overlay-built");
     // keep the button on top even if the game adds views later
     [NSTimer scheduledTimerWithTimeInterval:1.0 repeats:YES block:^(NSTimer *tm){
         if (!btn.hidden && btn.superview) [btn.superview bringSubviewToFront:btn];
@@ -1688,11 +1714,30 @@ static void *overlayEntry(void *unused) {
     return NULL;
 }
 
+// The actual start-up: arm the ad-view-controller hook and get the recon, ad and
+// overlay workers going.
+static void rkStartUp(void) {
+    rkBoot("startup-enter");
+    %init(VCDiag);
+    rkBoot("vcdiag-armed");
+    pthread_t th; pthread_create(&th, NULL, reconEntry, NULL); pthread_detach(th);
+    pthread_t th2; pthread_create(&th2, NULL, adEntry, NULL); pthread_detach(th2);
+    pthread_t th3; pthread_create(&th3, NULL, overlayEntry, NULL); pthread_detach(th3);
+    rkBoot("threads-started");
+}
+
 %ctor {
     @autoreleasepool {
-        %init(VCDiag);
-        pthread_t th; pthread_create(&th, NULL, reconEntry, NULL); pthread_detach(th);
-        pthread_t th2; pthread_create(&th2, NULL, adEntry, NULL); pthread_detach(th2);
-        pthread_t th3; pthread_create(&th3, NULL, overlayEntry, NULL); pthread_detach(th3);
+#if RK_STANDALONE
+        // Injected through LC_LOAD_DYLIB, this constructor runs during dyld
+        // initialisation — much earlier than a jailbreak loader would bring the
+        // tweak in, and before UIKit has been set up. Hooking ObjC classes and
+        // starting UI threads that early is not safe, so hand the work to the main
+        // queue, which is first serviced once the app is actually running.
+        rkBoot("ctor");
+        dispatch_async(dispatch_get_main_queue(), ^{ rkStartUp(); });
+#else
+        rkStartUp();
+#endif
     }
 }
