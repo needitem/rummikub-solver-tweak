@@ -913,18 +913,36 @@ static int rkColorIndex(NSString *name) {
 }
 // A tile chip: colour c (or -1 joker), number n (0=none). Returns a UILabel.
 // find an unused tile in `pool` matching (c,n) [or joker]; prefer loc==preferLoc.
-static NSMutableDictionary *rkTake(NSMutableArray *pool, int c, int n, BOOL joker, int preferLoc) {
-    NSMutableDictionary *best = nil;
+// Choose a physical tile for a solver slot. Rummikub has two of every tile, so a
+// value can match two copies; picking the wrong one makes a set that is already
+// correct on the board move for nothing, or leaves two sets fighting over the
+// same value and the run stalls. When a previous tile of this set is given,
+// prefer the copy that continues from it on the board (same row, next column) —
+// that keeps an already-formed run/group assigned to itself. Otherwise prefer any
+// board copy over a rack copy.
+static NSMutableDictionary *rkTakeNear(NSMutableArray *pool, int c, int n, BOOL joker,
+                                       NSDictionary *after) {
+    NSMutableDictionary *adj = nil, *board = nil, *any = nil;
+    int ar = after && [after[@"loc"] intValue] == 2 ? [after[@"gy"] intValue] : INT_MIN;
+    int ax = after && [after[@"loc"] intValue] == 2 ? [after[@"gx"] intValue] : INT_MIN;
     for (NSMutableDictionary *t in pool) {
         if ([t[@"used"] boolValue]) continue;
         if (joker) { if (![t[@"j"] boolValue]) continue; }
         else { if ([t[@"j"] boolValue]) continue;
                if ([t[@"c"] intValue] != c || [t[@"n"] intValue] != n) continue; }
-        if ([t[@"loc"] intValue] == preferLoc) { best = t; break; }
-        if (!best) best = t;
+        BOOL onBoard = [t[@"loc"] intValue] == 2;
+        if (onBoard && ar != INT_MIN &&
+            [t[@"gy"] intValue] == ar && [t[@"gx"] intValue] == ax + 1) { adj = t; break; }
+        if (onBoard && !board) board = t;
+        if (!any) any = t;
     }
+    NSMutableDictionary *best = adj ?: board ?: any;
     if (best) best[@"used"] = @YES;
     return best;
+}
+static NSMutableDictionary *rkTake(NSMutableArray *pool, int c, int n, BOOL joker, int preferLoc) {
+    (void)preferLoc;
+    return rkTakeNear(pool, c, n, joker, nil);
 }
 
 // A floating control: tap to act, drag to move it out of the way.
@@ -1124,20 +1142,22 @@ static UIButton *rkMakeButton(NSString *title, UIColor *tint, CGRect frame,
             int base = -1;
             for (int i = 0; i < (int)toks.count; i++)
                 if (![toks[i] isEqualToString:@"J"]) { base = [toks[i] intValue] - i; break; }
+            NSMutableDictionary *prev = nil;
             for (int i = 0; i < (int)toks.count; i++) {
                 NSMutableDictionary *td = [toks[i] isEqualToString:@"J"]
-                    ? rkTake(pool, 0, 0, YES, 2)
-                    : rkTake(pool, ci, (base < 0 ? [toks[i] intValue] : base + i), NO, 2);
-                if (td) [set addObject:td];
+                    ? rkTakeNear(pool, 0, 0, YES, prev)
+                    : rkTakeNear(pool, ci, (base < 0 ? [toks[i] intValue] : base + i), NO, prev);
+                if (td) { [set addObject:td]; prev = td; }
             }
         } else {
             int num = [head[1] intValue];
+            NSMutableDictionary *prev = nil;
             for (NSString *t in toks) {
                 if (!t.length) continue;
                 NSMutableDictionary *td = [t isEqualToString:@"J"]
-                    ? rkTake(pool, 0, 0, YES, 2)
-                    : rkTake(pool, rkColorIndex(t), num, NO, 2);
-                if (td) [set addObject:td];
+                    ? rkTakeNear(pool, 0, 0, YES, prev)
+                    : rkTakeNear(pool, rkColorIndex(t), num, NO, prev);
+                if (td) { [set addObject:td]; prev = td; }
             }
         }
         if (set.count >= 3) [sets addObject:set];
@@ -1594,11 +1614,32 @@ static UIButton *rkMakeButton(NSString *title, UIColor *tint, CGRect frame,
             for (NSDictionary *t in moveTiles) {
                 NSDictionary *pp = posOf[t[@"id"]];
                 int c = [t[@"c"] intValue];
-                [w appendFormat:@"%s%@@%@(%@,%@) ", (c>=0&&c<4)?CC[c]:"?", t[@"n"],
-                 pp[@"loc"], pp[@"gx"], pp[@"gy"]];
+                [w appendFormat:@"%s%@#%@@%@(%@,%@) ", (c>=0&&c<4)?CC[c]:"?", t[@"n"],
+                 t[@"id"], pp[@"loc"], pp[@"gx"], pp[@"gy"]];
             }
             RKLOG(@"[exec] core=[i=%d len=%d row=%d x=%d..%d] n=%d move[%@] -> (%d,%d) attach=%d",
                   coreI, coreLen, coreRow, coreL, coreR, n, w, tx, ty, attach);
+        }
+        // Stall watch: if the exact same move keeps being issued, dump the plan
+        // so we can see whether two sets are fighting over a duplicate value (the
+        // solver names tiles by colour+number; rkTake picks a copy greedily).
+        NSString *sig = [NSString stringWithFormat:@"%d,%d,%d,%@",
+                         tx, ty, attach, [moveTiles valueForKeyPath:@"@unionOfObjects.id"]];
+        int rep = [cur[@"sig"] isEqual:sig] ? [cur[@"sigN"] intValue] + 1 : 0;
+        cur[@"sig"] = sig; cur[@"sigN"] = @(rep);
+        if (rep == 6) {
+            RKLOG(@"[STALL] move repeated; remaining %lu sets:", (unsigned long)sq.count);
+            static const char *DC[4] = { "K", "Bl", "R", "Y" };
+            for (NSDictionary *ps in sq) {
+                NSMutableString *ln = [NSMutableString string];
+                for (NSDictionary *t in ps[@"tiles"]) {
+                    NSDictionary *pp = posOf[t[@"id"]];
+                    int c = [t[@"c"] intValue];
+                    [ln appendFormat:@"%s%@#%@@%@(%@,%@) ", (c>=0&&c<4)?DC[c]:"?", t[@"n"],
+                     t[@"id"], pp[@"loc"], pp ? pp[@"gx"] : @"-", pp ? pp[@"gy"] : @"-"];
+                }
+                RKLOG(@"[STALL]   set[%@]", ln);
+            }
         }
         void *md = rkBuildMove(moveTiles, tx, ty, attach);
         BOOL fired = md ? rkApplyMove(md) : NO;
